@@ -1,0 +1,72 @@
+{
+  "name": "skylink-api",
+  "version": "0.1.0",
+  "description": "Official TypeScript/JavaScript SDK for the SkyLink API — aviation data: live ADS-B, weather, airports, charts, NOTAMs, flight status and more.",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": ["dist"],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run --exclude tests/integration/**",
+    "test:watch": "vitest",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src tests examples",
+    "lint:fix": "biome check --write src tests examples",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "skylink",
+    "aviation",
+    "adsb",
+    "metar",
+    "taf",
+    "notam",
+    "flight-tracking",
+    "airports",
+    "aviation-weather",
+    "api-client",
+    "sdk"
+  ],
+  "author": "SkyLink API <support@skylinkapi.com>",
+  "license": "MIT",
+  "homepage": "https://skylinkapi.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/skylinkapi/TypeScript-SDK.git"
+  },
+  "bugs": {
+    "url": "https://github.com/skylinkapi/TypeScript-SDK/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.0.0",
+    "@types/node": "^22.0.0",
+    "tsup": "^8.3.0",
+    "typescript": "^5.6.0",
+    "undici": "^7.0.0",
+    "vitest": "^3.0.0"
+  }
+}
