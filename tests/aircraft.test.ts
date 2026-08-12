@@ -25,7 +25,12 @@ const performanceFixture = loadFixture<AircraftPerformance>("performance");
 
 function aircraft(options: ClientOptions = {}): Aircraft {
   return new Aircraft(
-    new SkyLink({ apiKey: "test-key", sleep: async () => undefined, ...options }),
+    new SkyLink({
+      apiKey: "test-key",
+      provider: "direct",
+      sleep: async () => undefined,
+      ...options,
+    }),
   );
 }
 

@@ -12,8 +12,9 @@
 
 import { APIStatusError, NotFoundError, RateLimitError, SkyLink } from "../src/index.js";
 
+// No provider given → the default RapidAPI channel, keyed by RAPIDAPI_KEY.
 // `historyPlan` sets the default prefix for every history call on this client.
-const sky = new SkyLink({ apiKey: process.env.SKYLINK_API_KEY, historyPlan: "ultra" });
+const sky = new SkyLink({ historyPlan: "ultra" });
 
 const REGISTRATION = "G-STBA";
 const ICAO24 = "4ca1fb";
@@ -118,4 +119,4 @@ main().catch((error: unknown) => {
   process.exit(1);
 });
 
-// --- Run: SKYLINK_API_KEY=... npx tsx examples/history.ts ---
+// --- Run: RAPIDAPI_KEY=... npx tsx examples/history.ts ---

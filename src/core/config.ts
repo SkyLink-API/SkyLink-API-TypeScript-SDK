@@ -2,6 +2,7 @@
  * Client configuration: provider defaults, credential resolution and validation.
  */
 
+import type { CacheProtocol } from "../helpers/cache.js";
 import { VERSION } from "../version.js";
 import { AuthenticationError, SkyLinkError } from "./errors.js";
 import type { FetchLike, Headers, HistoryPlan, Provider } from "./types.js";
@@ -21,6 +22,14 @@ export const DIRECT_ENV_VAR = "SKYLINK_API_KEY";
 /** Environment variable holding the RapidAPI key. */
 export const RAPIDAPI_ENV_VAR = "RAPIDAPI_KEY";
 
+/**
+ * Channel used when the caller does not pass `provider`.
+ *
+ * RapidAPI is the default because that is how most subscriptions reach the API.
+ * Pass `{ provider: "direct" }` for a key issued by skylinkapi.com itself.
+ */
+export const DEFAULT_PROVIDER: Provider = "rapidapi";
+
 /** Overall request deadline in milliseconds. */
 export const DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -36,11 +45,16 @@ export const USER_AGENT = `skylink-api-node/${VERSION}`;
 /** Options accepted by the `SkyLink` constructor. */
 export interface ClientOptions {
   /**
-   * API key. Falls back to `SKYLINK_API_KEY` (direct) or `RAPIDAPI_KEY` (rapidapi).
+   * API key.
+   *
+   * When omitted it is read from the environment: `RAPIDAPI_KEY`, falling back to
+   * `SKYLINK_API_KEY`, on the `rapidapi` channel; strictly `SKYLINK_API_KEY` on the
+   * `direct` channel.
+   *
    * Optional only when an explicit {@link baseUrl} is given (staging with auth disabled).
    */
   apiKey?: string;
-  /** Distribution channel. Defaults to `"direct"`. */
+  /** Distribution channel. Defaults to `"rapidapi"`. */
   provider?: Provider;
   /** Override the base URL (staging, proxies, local backend). Trailing slashes are trimmed. */
   baseUrl?: string;
@@ -54,6 +68,18 @@ export interface ClientOptions {
   defaultHeaders?: Headers;
   /** Custom `fetch` implementation. Defaults to the global `fetch` (Node >= 18). */
   fetch?: FetchLike;
+  /**
+   * Response cache. **Off by default**, and off for every operation the store gives
+   * a TTL of `0` — so adding one changes nothing until TTLs are configured.
+   *
+   * Only successful GET responses are stored. See {@link CacheProtocol} and
+   * {@link MemoryCache}.
+   *
+   * ```ts
+   * new SkyLink({ cache: new MemoryCache({ ttls: { "weather.metar": 300_000 } }) })
+   * ```
+   */
+  cache?: CacheProtocol | null;
   /**
    * Test seam: replaces the delay between retries.
    * @internal
@@ -77,6 +103,8 @@ export interface ResolvedConfig {
   historyPlan: HistoryPlan;
   /** Auth headers, User-Agent and any caller-supplied defaults. */
   defaultHeaders: Headers;
+  /** Response cache, or `null` when the client does not cache (the default). */
+  cache: CacheProtocol | null;
   fetch: FetchLike;
   sleep: (ms: number) => Promise<void>;
   random: () => number;
@@ -88,6 +116,21 @@ function readEnv(name: string): string | undefined {
   const proc = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process;
   const value = proc?.env?.[name];
   return typeof value === "string" && value.trim() !== "" ? value : undefined;
+}
+
+/**
+ * Read the key of a channel from the environment.
+ *
+ * `rapidapi` accepts `SKYLINK_API_KEY` as a fallback so that an existing
+ * environment keeps working now that it is the default channel; `direct` stays
+ * strict — a RapidAPI key is not a valid `x-api-key` and would only produce a
+ * confusing 401.
+ */
+function readApiKeyFromEnv(provider: Provider): string | undefined {
+  if (provider === "rapidapi") {
+    return readEnv(RAPIDAPI_ENV_VAR) ?? readEnv(DIRECT_ENV_VAR);
+  }
+  return readEnv(DIRECT_ENV_VAR);
 }
 
 function resolveFetch(custom?: FetchLike): FetchLike {
@@ -108,20 +151,33 @@ function defaultSleep(ms: number): Promise<void> {
 /**
  * Normalize {@link ClientOptions} into a {@link ResolvedConfig}.
  *
+ * The channel defaults to {@link DEFAULT_PROVIDER} (`rapidapi`). Its key is read
+ * from `RAPIDAPI_KEY` and then from `SKYLINK_API_KEY`; the `direct` channel only
+ * ever reads `SKYLINK_API_KEY`.
+ *
  * Throws {@link AuthenticationError} when no key can be found — unless an explicit
  * `baseUrl` was supplied, which is how the staging backend (`DISABLE_AUTH=true`)
  * and integration tests run keyless.
  */
 export function resolveConfig(options: ClientOptions = {}): ResolvedConfig {
-  const provider: Provider = options.provider ?? "direct";
+  const provider: Provider = options.provider ?? DEFAULT_PROVIDER;
   if (provider !== "direct" && provider !== "rapidapi") {
     throw new SkyLinkError(
       `Unknown provider: ${String(provider)}. Expected 'direct' or 'rapidapi'.`,
     );
   }
 
-  const envVar = provider === "rapidapi" ? RAPIDAPI_ENV_VAR : DIRECT_ENV_VAR;
-  const apiKey = options.apiKey?.trim() || readEnv(envVar) || null;
+  // Wording kept in sync with the Python SDK's AuthenticationError.
+  const envVars =
+    provider === "rapidapi" ? `${RAPIDAPI_ENV_VAR} (or ${DIRECT_ENV_VAR})` : DIRECT_ENV_VAR;
+  // An *omitted* key falls back to the environment; an explicitly passed blank
+  // one does not. Passing `apiKey: ""` almost always means an unset variable was
+  // interpolated, and silently reaching for a different variable would hide it.
+  // The Python SDK draws the line in the same place.
+  const apiKey =
+    options.apiKey === undefined
+      ? readApiKeyFromEnv(provider) || null
+      : options.apiKey.trim() || null;
 
   const explicitBaseUrl = typeof options.baseUrl === "string" && options.baseUrl.trim() !== "";
   const baseUrl = explicitBaseUrl
@@ -132,7 +188,7 @@ export function resolveConfig(options: ClientOptions = {}): ResolvedConfig {
 
   if (!apiKey && !explicitBaseUrl) {
     throw new AuthenticationError(
-      `Missing API key. Pass { apiKey } to the SkyLink constructor or set the ${envVar} environment variable.`,
+      `Missing API key for the '${provider}' provider. Pass { apiKey } to the SkyLink constructor or set the ${envVars} environment variable.`,
     );
   }
 
@@ -170,6 +226,7 @@ export function resolveConfig(options: ClientOptions = {}): ResolvedConfig {
       ...authHeaders,
       ...(options.defaultHeaders ?? {}),
     },
+    cache: options.cache ?? null,
     fetch: resolveFetch(options.fetch),
     sleep: options.sleep ?? defaultSleep,
     random: options.random ?? Math.random,

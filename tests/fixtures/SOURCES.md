@@ -36,6 +36,8 @@ Line numbers refer to the repository state of 2026-08-12.
 | `routes_vrs.json` | hand-built from research/01 §Routes / `services/v31/route_service.py:211-220` — `source:"vrs"` branch |
 | `routes_airline.json` | hand-built from research/01 §Routes / `services/v31/route_service.py:236-244` — `source:"airline_routes"` branch, **no `callsign` key** |
 | `carbon.json` | hand-built from research/02 §Carbon / `services/v31/carbon_service.py:195-226` — `include_rfi=false` ⇒ `co2_equivalent_*` null; `callsign` supplied ⇒ the three conditional keys are present |
+| `weather_metar_parsed.json` | copied from `Python-SDK-/tests/fixtures/` (task G1) — `weather_metar.json` plus the `parsed` block built by `routers/weather.py:148-182` (`_serialize_metar`); note `altimeter: 30.2` carries **no unit** and `relative_humidity: 0.67` is a **fraction** (research/04). Used by the `compose` briefs, which request weather with `parsed=true` |
+| `weather_taf_parsed.json` | copied from `Python-SDK-/tests/fixtures/` (task G1) — `parsed` block from `routers/weather.py:184-223` (`_serialize_taf`/`_serialize_taf_period`); periods carry **no `temperature`/`altimeter`** and the first one has the live `P6SM` form `{"value": null, "repr": "P6"}` (research/04) |
 | `errors_401.json` | verbatim from `main.py:190-201` (`_json_401`), research/01 §5 form A |
 | `errors_404.json` | hand-built from research/01 §5 form B — `HTTPException` detail string |
 | `errors_422_validation.json` | hand-built from research/01 §5 form C — FastAPI request-validation payload |

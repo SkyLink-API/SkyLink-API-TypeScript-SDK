@@ -8,7 +8,8 @@
 
 import { APIStatusError, RateLimitError, SkyLink } from "../src/index.js";
 
-const sky = new SkyLink({ apiKey: process.env.SKYLINK_API_KEY });
+// No provider given → the default RapidAPI channel, keyed by RAPIDAPI_KEY.
+const sky = new SkyLink();
 
 // JFK.
 const LAT = 40.6413;
@@ -48,8 +49,8 @@ async function main(): Promise<void> {
   }
 
   // --- Quota tracking --------------------------------------------------------
-  // `lastRateLimit` is refreshed from the `X-RateLimit-Requests-*` headers of every
-  // response — successful or not. It stays null if the plan sends no quota headers.
+  // `lastRateLimit` is refreshed from the channel's quota headers on every response —
+  // successful or not. It stays null if the deployment sends no quota headers.
   const quota = sky.lastRateLimit;
   if (quota) {
     console.log(
@@ -94,4 +95,4 @@ main().catch((error: unknown) => {
   process.exit(1);
 });
 
-// --- Run: SKYLINK_API_KEY=... npx tsx examples/adsb-tracking.ts ---
+// --- Run: RAPIDAPI_KEY=... npx tsx examples/adsb-tracking.ts ---

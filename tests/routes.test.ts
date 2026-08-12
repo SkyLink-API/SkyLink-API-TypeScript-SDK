@@ -25,7 +25,14 @@ const vrsFixture = loadFixture<VrsCallsignRoute>("routes_vrs");
 const airlineFixture = loadFixture<AirlineCallsignRoute>("routes_airline");
 
 function routes(options: ClientOptions = {}): Routes {
-  return new Routes(new SkyLink({ apiKey: "test-key", sleep: async () => undefined, ...options }));
+  return new Routes(
+    new SkyLink({
+      apiKey: "test-key",
+      provider: "direct",
+      sleep: async () => undefined,
+      ...options,
+    }),
+  );
 }
 
 /**

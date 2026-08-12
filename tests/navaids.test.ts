@@ -38,7 +38,14 @@ const navaidsBody = {
 };
 
 function navaids(options: ClientOptions = {}): Navaids {
-  return new Navaids(new SkyLink({ apiKey: "test-key", sleep: async () => undefined, ...options }));
+  return new Navaids(
+    new SkyLink({
+      apiKey: "test-key",
+      provider: "direct",
+      sleep: async () => undefined,
+      ...options,
+    }),
+  );
 }
 
 beforeEach(() => {

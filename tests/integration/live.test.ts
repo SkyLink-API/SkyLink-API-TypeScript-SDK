@@ -22,27 +22,25 @@
  * explanatory note rather than a failure.
  *
  * ```sh
- * # staging container from the backend's docker-compose.test.yml
- * SKYLINK_TEST_BASE_URL=http://localhost:8081/v3.1 npm run test:integration
+ * # production, RapidAPI channel — the default, no provider needed
+ * SKYLINK_TEST_API_KEY=...msh...jsn... npm run test:integration
  *
- * # production, direct channel, with a key
- * SKYLINK_TEST_BASE_URL=https://data.skylinkapi.com/v3.1 \
+ * # production, direct channel, with a key issued by skylinkapi.com
+ * SKYLINK_TEST_PROVIDER=direct \
  * SKYLINK_TEST_API_KEY=sk_live_... npm run test:integration
  *
- * # production, RapidAPI channel (base URL comes from the provider)
- * SKYLINK_TEST_PROVIDER=rapidapi \
- * SKYLINK_TEST_API_KEY=...msh...jsn... npm run test:integration
+ * # staging container from the backend's docker-compose.test.yml
+ * SKYLINK_TEST_BASE_URL=http://localhost:8081/v3.1 npm run test:integration
  * ```
  *
  * `SKYLINK_TEST_API_KEY` is optional: given an explicit `baseUrl` the SDK does
  * not demand a key, which is what a staging instance running `DISABLE_AUTH=true`
  * expects.
  *
- * `SKYLINK_TEST_PROVIDER` selects the channel (`direct` by default). Setting it to
- * `rapidapi` sends `X-RapidAPI-Key`/`X-RapidAPI-Host` and, unless
- * `SKYLINK_TEST_BASE_URL` overrides it, targets the marketplace host — which is why
- * either variable on its own is enough to arm the suite. With neither, the whole
- * suite reports as skipped.
+ * `SKYLINK_TEST_PROVIDER` selects the channel and mirrors the SDK default
+ * (`rapidapi`); set it to `direct` for an `x-api-key` deployment. Either a key or a
+ * base URL is enough to arm the suite — a key alone targets the channel's own
+ * endpoint. With neither, the whole suite reports as skipped.
  */
 
 import { beforeAll, describe, expect, it, type TestContext } from "vitest";
@@ -63,12 +61,12 @@ const BASE_URL = (process.env.SKYLINK_TEST_BASE_URL ?? "").trim();
 /** Optional key. Empty → the client falls back to its own environment variables. */
 const API_KEY = (process.env.SKYLINK_TEST_API_KEY ?? "").trim();
 
-/** Channel to exercise: `direct` (default) or `rapidapi`. */
+/** Channel to exercise: `rapidapi` (the SDK default) or `direct`. */
 const PROVIDER: Provider =
-  (process.env.SKYLINK_TEST_PROVIDER ?? "").trim() === "rapidapi" ? "rapidapi" : "direct";
+  (process.env.SKYLINK_TEST_PROVIDER ?? "").trim() === "direct" ? "direct" : "rapidapi";
 
-/** The suite is armed by a base URL (any channel) or by naming a provider with a key. */
-const ARMED = Boolean(BASE_URL) || (PROVIDER === "rapidapi" && Boolean(API_KEY));
+/** The suite is armed by a key (each channel knows its own endpoint) or by a base URL. */
+const ARMED = Boolean(API_KEY) || Boolean(BASE_URL);
 
 /**
  * Outcomes that are correct behaviour on a live deployment rather than SDK bugs:
@@ -520,11 +518,13 @@ describe.skipIf(!ARMED)("live SkyLink API", () => {
     await live(ctx, "geo.countries (quota headers)", () => sky.geo.countries());
 
     // A staging instance behind `DISABLE_AUTH=true` sends no quota headers, so
-    // `null` is a valid outcome there; what must never happen is a malformed
-    // snapshot. Both production gateways do send them, and the marketplace adds a
-    // second `x-ratelimit-rapid-*` family that must not be picked up by mistake.
+    // `null` is a valid outcome there. Both production gateways do send them — under
+    // different names, which is the point: RapidAPI spells them
+    // `x-ratelimit-requests-*` (plus a decorative `x-ratelimit-rapid-*` family that
+    // must not be picked up by mistake), APISIX spells them `x-ratelimit-*`. Reading
+    // only the first is exactly the bug this assertion now catches on either channel.
     const quota = sky.lastRateLimit;
-    if (PROVIDER === "rapidapi" && !BASE_URL) {
+    if (!BASE_URL) {
       expect(quota).not.toBeNull();
     }
     if (quota !== null) {

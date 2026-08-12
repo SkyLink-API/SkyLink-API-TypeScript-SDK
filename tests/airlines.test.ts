@@ -27,7 +27,12 @@ const britishAirways = {
 
 function airlines(options: ClientOptions = {}): Airlines {
   return new Airlines(
-    new SkyLink({ apiKey: "test-key", sleep: async () => undefined, ...options }),
+    new SkyLink({
+      apiKey: "test-key",
+      provider: "direct",
+      sleep: async () => undefined,
+      ...options,
+    }),
   );
 }
 

@@ -36,7 +36,12 @@ const arrivalsBody = {
 };
 
 function client(options: ClientOptions = {}): SkyLink {
-  return new SkyLink({ apiKey: "test-key", sleep: async () => undefined, ...options });
+  return new SkyLink({
+    apiKey: "test-key",
+    provider: "direct",
+    sleep: async () => undefined,
+    ...options,
+  });
 }
 
 /** The namespace is attached to the client in a later task; instantiate it directly. */

@@ -115,7 +115,8 @@ describe("injected fetch", () => {
     expect(metar.raw).toBe("METAR KJFK 121751Z 27012KT");
     expect(globalFetchSpy).not.toHaveBeenCalled();
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.url).toBe("https://data.skylinkapi.com/v3.1/weather/metar/KJFK?parsed=true");
+    // No provider given → the default RapidAPI channel, hence no version prefix.
+    expect(calls[0]?.url).toBe("https://skylink-api.p.rapidapi.com/weather/metar/KJFK?parsed=true");
     expect(calls[0]?.method).toBe("GET");
   });
 
@@ -130,26 +131,27 @@ describe("injected fetch", () => {
     await sky.adsb.statistics({ headers: { "X-Trace": "call" } });
 
     const headers = calls[0]?.headers ?? {};
-    expect(headers["x-api-key"]).toBe("test-key");
+    expect(headers["x-rapidapi-key"]).toBe("test-key");
+    expect(headers["x-rapidapi-host"]).toBe("skylink-api.p.rapidapi.com");
     expect(headers["user-agent"]).toBe(`skylink-api-node/${VERSION}`);
     expect(headers.accept).toBe("application/json");
     expect(headers["x-keep"]).toBe("yes");
     expect(headers["x-trace"]).toBe("call");
-    expect(headers["x-rapidapi-key"]).toBeUndefined();
+    expect(headers["x-api-key"]).toBeUndefined();
   });
 
-  it("keeps the RapidAPI channel intact behind a custom fetch", async () => {
+  it("keeps the direct channel intact behind a custom fetch", async () => {
     const { fetch, calls } = recorder({ body: { aircraft: [], total_count: 0 } });
-    const sky = new SkyLink({ provider: "rapidapi", apiKey: "rapid-key", fetch });
+    const sky = new SkyLink({ provider: "direct", apiKey: "direct-key", fetch });
 
     await sky.adsb.aircraft({ lat: 40.64, lon: -73.78, radius: 50, photos: false });
 
     expect(calls[0]?.url).toBe(
-      "https://skylink-api.p.rapidapi.com/adsb/aircraft?lat=40.64&lon=-73.78&radius=50&photos=false",
+      "https://data.skylinkapi.com/v3.1/adsb/aircraft?lat=40.64&lon=-73.78&radius=50&photos=false",
     );
-    expect(calls[0]?.headers["x-rapidapi-key"]).toBe("rapid-key");
-    expect(calls[0]?.headers["x-rapidapi-host"]).toBe("skylink-api.p.rapidapi.com");
-    expect(calls[0]?.headers["x-api-key"]).toBeUndefined();
+    expect(calls[0]?.headers["x-api-key"]).toBe("direct-key");
+    expect(calls[0]?.headers["x-rapidapi-key"]).toBeUndefined();
+    expect(calls[0]?.headers["x-rapidapi-host"]).toBeUndefined();
   });
 
   it("passes the JSON body and content-type of a POST", async () => {

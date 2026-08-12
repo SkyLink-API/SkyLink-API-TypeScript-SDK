@@ -25,7 +25,12 @@ import {
 const metarFixture = loadFixture<MetarResponse>("weather_metar");
 
 function client(options: ClientOptions = {}): SkyLink {
-  return new SkyLink({ apiKey: "test-key", sleep: async () => undefined, ...options });
+  return new SkyLink({
+    apiKey: "test-key",
+    provider: "direct",
+    sleep: async () => undefined,
+    ...options,
+  });
 }
 
 beforeEach(() => {

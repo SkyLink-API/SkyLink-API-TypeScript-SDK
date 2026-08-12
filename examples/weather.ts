@@ -7,7 +7,8 @@
 
 import { APIStatusError, RateLimitError, SkyLink } from "../src/index.js";
 
-const sky = new SkyLink({ apiKey: process.env.SKYLINK_API_KEY });
+// No provider given → the default RapidAPI channel, keyed by RAPIDAPI_KEY.
+const sky = new SkyLink();
 
 async function main(): Promise<void> {
   // --- METAR, raw ------------------------------------------------------------
@@ -80,4 +81,4 @@ main().catch((error: unknown) => {
   process.exit(1);
 });
 
-// --- Run: SKYLINK_API_KEY=... npx tsx examples/weather.ts ---
+// --- Run: RAPIDAPI_KEY=... npx tsx examples/weather.ts ---

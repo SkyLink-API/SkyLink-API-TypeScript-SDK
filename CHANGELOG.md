@@ -16,24 +16,29 @@ First public release. Covers the SkyLink API v3.1 surface.
 
 - `SkyLink` client with eager readonly namespaces, resolved configuration on
   `client.config` and `client.baseUrl`.
-- Two distribution channels via `provider`: `"direct"`
-  (`https://data.skylinkapi.com/v3.1`, `x-api-key`, `SKYLINK_API_KEY`) and
-  `"rapidapi"` (`https://skylink-api.p.rapidapi.com`, `X-RapidAPI-Key` +
-  `X-RapidAPI-Host`, `RAPIDAPI_KEY`). Both expose an identical method surface.
+- Two distribution channels via `provider`: `"rapidapi"` — **the default** —
+  (`https://skylink-api.p.rapidapi.com`, `X-RapidAPI-Key` + `X-RapidAPI-Host`,
+  `RAPIDAPI_KEY` falling back to `SKYLINK_API_KEY`) and `"direct"`
+  (`https://data.skylinkapi.com/v3.1`, `x-api-key`, `SKYLINK_API_KEY` only). Both
+  expose an identical method surface.
 - `baseUrl` override for staging and local backends; supplying it makes the API key
   optional, so keyless `DISABLE_AUTH` deployments work.
-- Options: `apiKey`, `provider`, `baseUrl`, `timeout` (30 000 ms), `maxRetries` (3),
-  `historyPlan` (`"ultra"`), `defaultHeaders`, `fetch`.
+- Options: `apiKey`, `provider` (`"rapidapi"`), `baseUrl`, `timeout` (30 000 ms),
+  `maxRetries` (3), `historyPlan` (`"ultra"`), `defaultHeaders`, `fetch`.
 - Per-request `RequestOptions`: `timeout`, `maxRetries`, `headers`, `signal`.
-- `client.lastRateLimit` from the `X-RateLimit-Requests-{Limit,Remaining,Reset}`
-  headers of every response, error responses included.
+- `client.lastRateLimit` from the quota headers of every response, error responses
+  included — `X-RateLimit-Requests-{Limit,Remaining,Reset}` on RapidAPI and
+  `X-RateLimit-{Limit,Remaining,Reset}` on the direct channel, the former taking
+  precedence. RapidAPI's `X-RateLimit-rapid-free-plans-hard-limit-*` headers are
+  ignored: they report the marketplace's free-tier ceiling, not the plan's quota.
 - `client.request()` / `client.requestWithResponse()` as escape hatches for untyped
   endpoints.
 
-**Namespaces** (18) — `weather`, `airports`, `airlines`, `navaids`, `geo`, `adsb`,
+**Namespaces** (21) — `weather`, `airports`, `airlines`, `navaids`, `geo`, `adsb`,
 `aircraft`, `charts`, `delays`, `notams`, `schedules`, `ml`, `carbon`, `briefing`,
-`routes`, `tickets`, `webhooks`, `history` — plus the client-level shortcuts
-`flightStatus()` and `distance()`.
+`routes`, `tickets`, `webhooks`, `history`, plus the three client-side ones
+(`batch`, `poll`, `compose`) — and the client-level shortcuts `flightStatus()` and
+`distance()`.
 
 - `weather` — `metar`, `taf` (both overloaded on `parsed`), `windsAloft`, `pireps`,
   `airsigmet`.
@@ -57,6 +62,40 @@ First public release. Covers the SkyLink API v3.1 surface.
 - `history` — `flights`, `flight`, `track`, `positions` (dispatches ICAO24 vs
   registration by shape), `positionsByIcao24`, `positionsByRegistration`,
   `airportTraffic`, all parameterized by the `ultra` / `mega` plan prefix.
+
+**Developer experience**
+
+- `sky.batch` — `metars`, `tafs`, `notams`, `airports` (IATA/ICAO classified per code),
+  `flightStatuses`: one entry per input identifier holding the response *or* its
+  `SkyLinkError`, five requests in flight by default, duplicates collapsed. Helpers
+  `successes`, `failures`, `isBatchError`, `throwForErrors`, `mapConcurrent`.
+- `sky.compose` — `airportBrief`, `flightBrief`, `routeBrief`, `enrichAdsb`,
+  `schedulesWithStatus`, `northAmericaCountries`. Parts are fetched in parallel and a
+  failed part is collected into `brief.errors` under its own name instead of throwing;
+  only the primary call (airport lookup, flight status, schedule board) propagates.
+  `include`/`exclude` decide what is *requested*, so a deselected part costs no quota.
+  Briefs fetch weather with `parsed: true`; `flightBrief` prices CO₂ from the route's
+  ICAO pair and falls back to the callsign; `schedulesWithStatus` accepts IATA or ICAO
+  and requests each distinct flight number once.
+- `sky.poll` — `flightStatus` (changes only, stops on a terminal status) and `adsb`
+  (appeared/updated/disappeared diffs plus the full snapshot) as async generators;
+  429 and 5xx are waited out, `interval`/`maxIterations`/`AbortSignal` end the loop.
+- Async iterators over the two paginated shapes: `adsb.iterAircraft()` (`limit`/`offset`,
+  with a repeated-page guard) and `history.iterFlights()` (time windows clamped to the
+  plan's retention).
+- Zero-dependency helper modules, also published as subpath entry points
+  (`skylink-api/units`, `/spatial`, `/idents`, `/weather`, `/geojson`, `/sentinels`,
+  `/batch`, `/cache`, `/csv`): unit conversions and the prose/`P6SM` parsers,
+  great-circle and bounding-box maths, track statistics and RDP simplification,
+  flight-category/ceiling/wind components, identifier classification, sentinel
+  narrowing, RFC 7946 GeoJSON exporters and RFC 4180 `toCsv()`.
+- Opt-in response cache (`MemoryCache`, `CacheProtocol`, `resolveTtl`,
+  `CACHE_HIT_HEADER`): **off unless configured**, per-operation TTLs in milliseconds,
+  successful GETs only, LRU eviction on a monotonic clock.
+- Quota observers `client.onRateLimit()` (every response that carried the headers) and
+  `client.onQuotaLow()` (once per crossing, re-armed on reset), plus `SkyLink.fromEnv()`
+  and `client.withOptions()` for clones that share the connection pool but not state.
+- `webhooks.ensure()` for idempotent subscription setup.
 
 **Transport**
 
@@ -98,7 +137,9 @@ First public release. Covers the SkyLink API v3.1 surface.
   false`, Node >= 18.
 - CI on Node 18/20/22 (Biome, `tsc --noEmit`, build, vitest) and tag-triggered
   publishing with npm provenance.
-- Five runnable examples in `examples/` and an env-gated integration suite.
+- Ten runnable examples in `examples/` — weather, ADS-B, briefings, history, webhooks,
+  batch, compose, polling, helper exports, cache and quota — and an env-gated
+  integration suite.
 
 [Unreleased]: https://github.com/skylinkapi/TypeScript-SDK/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/skylinkapi/TypeScript-SDK/releases/tag/v0.1.0

@@ -26,7 +26,11 @@ import {
   VERSION,
 } from "../src/index.js";
 
-/** Every namespace promised by the README and the marketing site. */
+/**
+ * Every namespace promised by the README and the marketing site, plus the three
+ * client-side ones (`batch`, `poll`, `compose`) that wrap those endpoints rather
+ * than adding new ones.
+ */
 const NAMESPACES = [
   "weather",
   "airports",
@@ -46,6 +50,9 @@ const NAMESPACES = [
   "tickets",
   "webhooks",
   "history",
+  "batch",
+  "poll",
+  "compose",
 ] as const;
 
 function newClient(): SkyLink {
@@ -59,12 +66,19 @@ describe("public entry point", () => {
     expect(SDK.VERSION).toBe(VERSION);
   });
 
-  it("constructs from an explicit api key", () => {
+  it("constructs from an explicit api key on the default (RapidAPI) channel", () => {
     const sky = newClient();
     expect(sky).toBeInstanceOf(SkyLink);
     expect(sky.config.apiKey).toBe("test");
-    expect(sky.baseUrl).toBe("https://data.skylinkapi.com/v3.1");
+    expect(sky.config.provider).toBe("rapidapi");
+    expect(sky.baseUrl).toBe("https://skylink-api.p.rapidapi.com");
     expect(sky.lastRateLimit).toBeNull();
+  });
+
+  it("constructs the direct channel when asked for it", () => {
+    const sky = new SkyLink({ apiKey: "test", provider: "direct" });
+    expect(sky.config.provider).toBe("direct");
+    expect(sky.baseUrl).toBe("https://data.skylinkapi.com/v3.1");
   });
 });
 
@@ -77,8 +91,8 @@ describe("namespace wiring", () => {
     expect(typeof namespace).toBe("object");
   });
 
-  it("attaches all 18 namespaces", () => {
-    expect(NAMESPACES).toHaveLength(18);
+  it("attaches all 21 namespaces", () => {
+    expect(NAMESPACES).toHaveLength(21);
   });
 
   it("gives every namespace at least one callable method", () => {
@@ -115,6 +129,30 @@ describe("shortcut methods", () => {
   it("exposes the escape hatches", () => {
     expect(typeof sky.request).toBe("function");
     expect(typeof sky.requestWithResponse).toBe("function");
+  });
+
+  it("exposes the DX surface: quota hooks, cloning and the environment constructor", () => {
+    expect(typeof SkyLink.fromEnv).toBe("function");
+    expect(typeof sky.withOptions).toBe("function");
+    expect(typeof sky.onRateLimit).toBe("function");
+    expect(typeof sky.onQuotaLow).toBe("function");
+  });
+});
+
+describe("cache surface", () => {
+  it("exports the store, its TTL resolver and the operation namer", () => {
+    expect(typeof SDK.MemoryCache).toBe("function");
+    expect(typeof SDK.resolveTtl).toBe("function");
+    expect(typeof SDK.deriveOperation).toBe("function");
+    expect(SDK.DEFAULT_CACHE_MAX_ENTRIES).toBeGreaterThan(0);
+    expect(SDK.CACHE_HIT_HEADER).toBe("x-skylink-cache");
+  });
+
+  it("ships a cache that stores nothing until it is configured", () => {
+    const cache = new SDK.MemoryCache();
+    expect(cache.ttlFor("weather.metar")).toBe(0);
+    cache.set("k", "v", cache.ttlFor("weather.metar"));
+    expect(cache.get("k")).toBeUndefined();
   });
 });
 

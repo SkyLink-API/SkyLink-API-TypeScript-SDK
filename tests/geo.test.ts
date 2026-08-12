@@ -58,7 +58,14 @@ const regionsBody = {
 };
 
 function geo(options: ClientOptions = {}): Geo {
-  return new Geo(new SkyLink({ apiKey: "test-key", sleep: async () => undefined, ...options }));
+  return new Geo(
+    new SkyLink({
+      apiKey: "test-key",
+      provider: "direct",
+      sleep: async () => undefined,
+      ...options,
+    }),
+  );
 }
 
 beforeEach(() => {

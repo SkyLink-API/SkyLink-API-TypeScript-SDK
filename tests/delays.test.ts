@@ -54,7 +54,14 @@ const delaysBody = {
 };
 
 function delays(options: ClientOptions = {}): Delays {
-  return new Delays(new SkyLink({ apiKey: "test-key", sleep: async () => undefined, ...options }));
+  return new Delays(
+    new SkyLink({
+      apiKey: "test-key",
+      provider: "direct",
+      sleep: async () => undefined,
+      ...options,
+    }),
+  );
 }
 
 beforeEach(() => {

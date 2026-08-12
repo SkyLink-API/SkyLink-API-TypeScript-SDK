@@ -176,6 +176,7 @@ describe("retry loop over the wire", () => {
   function client(overrides: { maxRetries?: number; random?: () => number } = {}): SkyLink {
     return new SkyLink({
       apiKey: "key",
+      provider: "direct",
       maxRetries: overrides.maxRetries ?? 3,
       random: overrides.random ?? (() => 0.5),
       sleep: async (ms: number) => {

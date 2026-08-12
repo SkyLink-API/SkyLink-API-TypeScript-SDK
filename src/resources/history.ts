@@ -48,6 +48,96 @@ function toIso(value: DateTimeInput | undefined): string | undefined {
   return value === undefined ? undefined : formatDateTimeISO(value);
 }
 
+/**
+ * Reject a flight search that carries no identifying filter.
+ *
+ * The API answers 422 to one; the SDK says so first, so an unfiltered search never
+ * costs a round trip or a quota unit.
+ *
+ * @throws {SkyLinkError} When none of {@link REQUIRED_FLIGHT_FILTERS} is set.
+ */
+function assertFlightFilter(params: HistoryFlightsParams, caller: string): void {
+  const hasFilter = REQUIRED_FLIGHT_FILTERS.some(
+    (name) => params[name] !== undefined && params[name] !== null,
+  );
+  if (!hasFilter) {
+    throw new SkyLinkError(
+      `${caller} requires at least one filter: ${REQUIRED_FLIGHT_FILTERS.join(", ")}. ` +
+        "Searching the whole archive by time window alone is not supported.",
+    );
+  }
+}
+
+/** Milliseconds in a day. */
+const DAY_MS = 86_400_000;
+
+/** Window {@link History.iterFlights} slices with when the caller does not say. */
+export const DEFAULT_ITER_WINDOW_DAYS = 7;
+
+/**
+ * Longest range each plan accepts in one request, enforced by the backend routers
+ * (`_MAX_DAYS`): a wider `start`/`end` is a 422, not a truncated answer.
+ *
+ * This is the per-request cap, and also how far back {@link History.iterFlights}
+ * defaults to when no `start` is given.
+ */
+export const HISTORY_MAX_WINDOW_DAYS: Readonly<Record<HistoryPlan, number>> = {
+  ultra: 90,
+  mega: 365,
+};
+
+/** Options of {@link History.iterFlights}. */
+export interface IterFlightsOptions extends RequestOptions {
+  /**
+   * Width of each request's `start`/`end` window in days. Defaults to
+   * {@link DEFAULT_ITER_WINDOW_DAYS}, clamped to the plan's maximum
+   * ({@link HISTORY_MAX_WINDOW_DAYS}).
+   *
+   * Narrower windows cost more requests but are far less likely to hit the per-request
+   * row cap (`limit`), which the API applies silently — a 90-day search that returns
+   * exactly 1000 rows has almost certainly dropped some.
+   */
+  windowDays?: number;
+  /** Stop after yielding this many flights. Unlimited by default. */
+  maxItems?: number;
+  /** Plan for every request of the walk; wins over `params.plan` and the client option. */
+  plan?: HistoryPlan;
+}
+
+/**
+ * Identity of an archived flight, for de-duplicating the overlap between windows.
+ *
+ * `flight_id` is the real key; the fallback exists because the positions and traffic
+ * projections of the same row do not always carry it. A row with nothing identifying
+ * at all is passed through rather than dropped.
+ */
+function flightKey(flight: HistoryFlight): string | null {
+  if (typeof flight.flight_id === "string" && flight.flight_id !== "") return flight.flight_id;
+  const parts = [flight.icao24, flight.callsign, flight.flight_start, flight.takeoff_time];
+  if (!parts.some((part) => typeof part === "string" && part !== "")) return null;
+  return `~${parts.map((part) => part ?? "").join("|")}`;
+}
+
+/** ISO 8601 without a zone designator — what the API itself emits and reads as UTC. */
+const NAIVE_ISO = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/;
+
+/**
+ * Epoch milliseconds of a `start`/`end` input.
+ *
+ * A string without an offset is read as **UTC**, matching the backend, rather than as
+ * host-local time the way `new Date("2026-02-10T00:00:00")` would.
+ */
+function toEpochMs(value: DateTimeInput, name: string): number {
+  const ms =
+    value instanceof Date
+      ? value.getTime()
+      : Date.parse(NAIVE_ISO.test(value.trim()) ? `${value.trim().replace(" ", "T")}Z` : value);
+  if (Number.isNaN(ms)) {
+    throw new SkyLinkError(`Invalid ${name}: ${String(value)} is not a parseable date.`);
+  }
+  return ms;
+}
+
 /** Historical ADS-B endpoints. */
 export class History extends APIResource {
   /**
@@ -76,15 +166,7 @@ export class History extends APIResource {
    * @throws {SkyLinkError} When no identifying filter is supplied.
    */
   flights(params: HistoryFlightsParams, options?: RequestOptions): Promise<HistoryFlightsResponse> {
-    const hasFilter = REQUIRED_FLIGHT_FILTERS.some(
-      (name) => params[name] !== undefined && params[name] !== null,
-    );
-    if (!hasFilter) {
-      throw new SkyLinkError(
-        `history.flights() requires at least one filter: ${REQUIRED_FLIGHT_FILTERS.join(", ")}. ` +
-          "Searching the whole archive by time window alone is not supported.",
-      );
-    }
+    assertFlightFilter(params, "history.flights()");
 
     return this.get(
       `${this.prefix(params.plan)}/flights`,
@@ -100,6 +182,112 @@ export class History extends APIResource {
       },
       options,
     );
+  }
+
+  /**
+   * Walk a long time range as one stream of flights, newest first.
+   *
+   * `history.flights()` has no pagination at all: it takes one window and returns at
+   * most `limit` rows (1000 on ULTRA, 2000 on MEGA) with no signal that anything was
+   * cut off, and refuses a window wider than the plan's retention (90 / 365 days) with
+   * a 422. This iterator hides both: it slices `[start, end]` into `windowDays`-wide
+   * requests and walks them from the newest backwards, de-duplicating the flights that
+   * straddle a window boundary by `flight_id`.
+   *
+   * Same filter rule as {@link flights} — at least one of `icao24`, `registration`,
+   * `callsign`, `departure_icao`, `arrival_icao`, checked **synchronously**, before any
+   * request. `flight_state` is always `ARCHIVED` in this archive, so it is not a filter
+   * worth having.
+   *
+   * With no `start`/`end` the range is the plan's whole retention window ending now:
+   * 90 days on ULTRA, 365 on MEGA ({@link HISTORY_MAX_WINDOW_DAYS}).
+   *
+   * ```ts
+   * for await (const flight of sky.history.iterFlights(
+   *   { registration: "G-STBA", start: "2026-01-01T00:00:00Z" },
+   *   { windowDays: 7, maxItems: 500 },
+   * )) {
+   *   console.log(flight.flight_id, flight.takeoff_time);
+   * }
+   * ```
+   *
+   * `GET /{plan}/history/flights?start&end&…` once per window.
+   *
+   * @throws {SkyLinkError} Synchronously, before any request, when no identifying
+   * filter is supplied, when a date is unparseable, when `start` is not before `end`,
+   * or when `windowDays`/`maxItems` are not usable numbers.
+   */
+  iterFlights(
+    params: HistoryFlightsParams,
+    options: IterFlightsOptions = {},
+  ): AsyncGenerator<HistoryFlight, void, undefined> {
+    const { windowDays, maxItems, plan, ...requestOptions } = options;
+    assertFlightFilter(params, "history.iterFlights()");
+
+    const effectivePlan: HistoryPlan = plan ?? params.plan ?? this.client.config.historyPlan;
+    const maxWindowDays = HISTORY_MAX_WINDOW_DAYS[effectivePlan] ?? HISTORY_MAX_WINDOW_DAYS.ultra;
+
+    const requested = windowDays ?? DEFAULT_ITER_WINDOW_DAYS;
+    if (!Number.isFinite(requested) || requested <= 0) {
+      throw new SkyLinkError(
+        `windowDays must be a positive number, received ${String(windowDays)}.`,
+      );
+    }
+    // Wider than the plan allows is a guaranteed 422, so it is clamped rather than sent.
+    const windowMs = Math.min(requested, maxWindowDays) * DAY_MS;
+
+    if (maxItems !== undefined && (!Number.isInteger(maxItems) || maxItems < 0)) {
+      throw new SkyLinkError(
+        `maxItems must be a non-negative integer, received ${String(maxItems)}.`,
+      );
+    }
+
+    const end = params.end === undefined ? Date.now() : toEpochMs(params.end, "end");
+    const start =
+      params.start === undefined ? end - maxWindowDays * DAY_MS : toEpochMs(params.start, "start");
+    if (start >= end) {
+      throw new SkyLinkError(
+        `history.iterFlights() needs start before end, received start=${new Date(start).toISOString()} end=${new Date(end).toISOString()}.`,
+      );
+    }
+
+    return this.walkFlights(params, effectivePlan, start, end, windowMs, maxItems, requestOptions);
+  }
+
+  /** Window walk behind {@link iterFlights}, split out so argument checks throw eagerly. */
+  private async *walkFlights(
+    params: HistoryFlightsParams,
+    plan: HistoryPlan,
+    start: number,
+    end: number,
+    windowMs: number,
+    maxItems: number | undefined,
+    options: RequestOptions,
+  ): AsyncGenerator<HistoryFlight, void, undefined> {
+    const seen = new Set<string>();
+    let yielded = 0;
+    let cursor = end;
+
+    while (cursor > start && (maxItems === undefined || yielded < maxItems)) {
+      const windowStart = Math.max(start, cursor - windowMs);
+      const response = await this.flights(
+        { ...params, plan, start: new Date(windowStart), end: new Date(cursor) },
+        options,
+      );
+
+      for (const flight of response?.flights ?? []) {
+        const key = flightKey(flight);
+        if (key !== null) {
+          if (seen.has(key)) continue;
+          seen.add(key);
+        }
+        yield flight;
+        yielded += 1;
+        if (maxItems !== undefined && yielded >= maxItems) return;
+      }
+
+      cursor = windowStart;
+    }
   }
 
   /**

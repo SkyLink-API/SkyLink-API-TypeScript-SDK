@@ -1,8 +1,10 @@
+import { inspect } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SkyLink } from "../src/client.js";
 import {
   type ClientOptions,
   DEFAULT_MAX_RETRIES,
+  DEFAULT_PROVIDER,
   DEFAULT_TIMEOUT_MS,
   DIRECT_BASE_URL,
   RAPIDAPI_BASE_URL,
@@ -17,6 +19,7 @@ import {
   SkyLinkError,
 } from "../src/core/errors.js";
 import type { FetchLike } from "../src/core/types.js";
+import { MemoryCache } from "../src/helpers/cache.js";
 import { VERSION } from "../src/version.js";
 import {
   DIRECT_ORIGIN,
@@ -53,25 +56,28 @@ describe("resolveConfig", () => {
     }
   });
 
-  it("defaults to the direct provider", () => {
+  it("defaults to the RapidAPI provider with both marketplace headers", () => {
     const config = resolveConfig({ apiKey: "secret" });
-    expect(config.provider).toBe("direct");
-    expect(config.baseUrl).toBe(DIRECT_BASE_URL);
-    expect(config.baseUrl).toBe("https://data.skylinkapi.com/v3.1");
-    expect(config.defaultHeaders["x-api-key"]).toBe("secret");
-    expect(config.defaultHeaders["X-RapidAPI-Key"]).toBeUndefined();
+    expect(DEFAULT_PROVIDER).toBe("rapidapi");
+    expect(config.provider).toBe("rapidapi");
+    expect(config.baseUrl).toBe(RAPIDAPI_BASE_URL);
+    expect(config.baseUrl).toBe("https://skylink-api.p.rapidapi.com");
+    expect(config.defaultHeaders["X-RapidAPI-Key"]).toBe("secret");
+    expect(config.defaultHeaders["X-RapidAPI-Host"]).toBe(RAPIDAPI_HOST);
+    expect(config.defaultHeaders["x-api-key"]).toBeUndefined();
     expect(config.timeout).toBe(DEFAULT_TIMEOUT_MS);
     expect(config.maxRetries).toBe(DEFAULT_MAX_RETRIES);
     expect(config.historyPlan).toBe("ultra");
   });
 
-  it("configures the RapidAPI channel with both marketplace headers", () => {
-    const config = resolveConfig({ apiKey: "rapid-secret", provider: "rapidapi" });
-    expect(config.baseUrl).toBe(RAPIDAPI_BASE_URL);
-    expect(config.baseUrl).toBe("https://skylink-api.p.rapidapi.com");
-    expect(config.defaultHeaders["X-RapidAPI-Key"]).toBe("rapid-secret");
-    expect(config.defaultHeaders["X-RapidAPI-Host"]).toBe(RAPIDAPI_HOST);
-    expect(config.defaultHeaders["x-api-key"]).toBeUndefined();
+  it("configures the direct channel when it is requested explicitly", () => {
+    const config = resolveConfig({ apiKey: "direct-secret", provider: "direct" });
+    expect(config.provider).toBe("direct");
+    expect(config.baseUrl).toBe(DIRECT_BASE_URL);
+    expect(config.baseUrl).toBe("https://data.skylinkapi.com/v3.1");
+    expect(config.defaultHeaders["x-api-key"]).toBe("direct-secret");
+    expect(config.defaultHeaders["X-RapidAPI-Key"]).toBeUndefined();
+    expect(config.defaultHeaders["X-RapidAPI-Host"]).toBeUndefined();
   });
 
   it("sends the node User-Agent", () => {
@@ -81,33 +87,66 @@ describe("resolveConfig", () => {
     );
   });
 
-  it("falls back to SKYLINK_API_KEY for the direct provider", () => {
-    process.env.SKYLINK_API_KEY = "env-direct";
-    expect(resolveConfig().apiKey).toBe("env-direct");
-    expect(resolveConfig().defaultHeaders["x-api-key"]).toBe("env-direct");
-  });
-
-  it("falls back to RAPIDAPI_KEY for the rapidapi provider", () => {
+  it("falls back to RAPIDAPI_KEY on the default provider", () => {
     process.env.RAPIDAPI_KEY = "env-rapid";
-    const config = resolveConfig({ provider: "rapidapi" });
+    const config = resolveConfig();
     expect(config.apiKey).toBe("env-rapid");
     expect(config.defaultHeaders["X-RapidAPI-Key"]).toBe("env-rapid");
   });
 
-  it("does not read the other provider's environment variable", () => {
+  it("falls back to SKYLINK_API_KEY on the rapidapi provider when RAPIDAPI_KEY is absent", () => {
+    process.env.SKYLINK_API_KEY = "env-shared";
+    const config = resolveConfig();
+    expect(config.provider).toBe("rapidapi");
+    expect(config.apiKey).toBe("env-shared");
+    expect(config.defaultHeaders["X-RapidAPI-Key"]).toBe("env-shared");
+  });
+
+  it("prefers RAPIDAPI_KEY over SKYLINK_API_KEY on the rapidapi provider", () => {
+    process.env.RAPIDAPI_KEY = "env-rapid";
     process.env.SKYLINK_API_KEY = "env-direct";
-    expect(() => resolveConfig({ provider: "rapidapi" })).toThrow(AuthenticationError);
+    expect(resolveConfig({ provider: "rapidapi" }).apiKey).toBe("env-rapid");
+  });
+
+  it("falls back to SKYLINK_API_KEY for the direct provider", () => {
+    process.env.SKYLINK_API_KEY = "env-direct";
+    const config = resolveConfig({ provider: "direct" });
+    expect(config.apiKey).toBe("env-direct");
+    expect(config.defaultHeaders["x-api-key"]).toBe("env-direct");
+  });
+
+  it("never reads RAPIDAPI_KEY for the direct provider", () => {
+    process.env.RAPIDAPI_KEY = "env-rapid";
+    expect(() => resolveConfig({ provider: "direct" })).toThrow(AuthenticationError);
   });
 
   it("prefers an explicit key over the environment", () => {
+    process.env.RAPIDAPI_KEY = "env-rapid";
     process.env.SKYLINK_API_KEY = "env-direct";
     expect(resolveConfig({ apiKey: "explicit" }).apiKey).toBe("explicit");
   });
 
+  it("does not fall back to the environment for an explicitly blank key", () => {
+    // `apiKey: ""` nearly always means an unset variable was interpolated.
+    // Reaching for a *different* variable would hide that, so it is an error —
+    // the Python SDK draws the line in the same place.
+    process.env.RAPIDAPI_KEY = "env-rapid";
+    expect(() => resolveConfig({ apiKey: "" })).toThrow(AuthenticationError);
+    expect(() => resolveConfig({ apiKey: "   " })).toThrow(AuthenticationError);
+    // Omitting the option entirely is the case that *does* read the environment.
+    expect(resolveConfig({}).apiKey).toBe("env-rapid");
+  });
+
   it("throws AuthenticationError when no key can be found", () => {
     expect(() => resolveConfig()).toThrow(AuthenticationError);
-    expect(() => resolveConfig()).toThrow(/SKYLINK_API_KEY/);
-    expect(() => resolveConfig({ provider: "rapidapi" })).toThrow(/RAPIDAPI_KEY/);
+    expect(() => resolveConfig()).toThrow(
+      /set the RAPIDAPI_KEY \(or SKYLINK_API_KEY\) environment variable/,
+    );
+    expect(() => resolveConfig({ provider: "direct" })).toThrow(AuthenticationError);
+    // The direct branch names one variable only — a RapidAPI key is not an x-api-key.
+    expect(() => resolveConfig({ provider: "direct" })).toThrow(
+      /set the SKYLINK_API_KEY environment variable/,
+    );
   });
 
   it("allows a keyless client when baseUrl is explicit (staging with auth disabled)", () => {
@@ -115,6 +154,7 @@ describe("resolveConfig", () => {
     expect(config.apiKey).toBeNull();
     expect(config.baseUrl).toBe("http://localhost:8081/v3.1");
     expect(config.defaultHeaders["x-api-key"]).toBeUndefined();
+    expect(config.defaultHeaders["X-RapidAPI-Key"]).toBeUndefined();
     expect(config.defaultHeaders["User-Agent"]).toBe(USER_AGENT);
   });
 
@@ -125,14 +165,21 @@ describe("resolveConfig", () => {
   });
 
   it("keeps auth headers when baseUrl is overridden with a key present", () => {
-    const config = resolveConfig({ apiKey: "k", baseUrl: "http://localhost:8081" });
-    expect(config.defaultHeaders["x-api-key"]).toBe("k");
+    expect(
+      resolveConfig({ apiKey: "k", baseUrl: "http://localhost:8081" }).defaultHeaders[
+        "X-RapidAPI-Key"
+      ],
+    ).toBe("k");
+    expect(
+      resolveConfig({ apiKey: "k", provider: "direct", baseUrl: "http://localhost:8081" })
+        .defaultHeaders["x-api-key"],
+    ).toBe("k");
   });
 
   it("merges caller-supplied default headers", () => {
     const config = resolveConfig({ apiKey: "k", defaultHeaders: { "X-Trace": "1" } });
     expect(config.defaultHeaders["X-Trace"]).toBe("1");
-    expect(config.defaultHeaders["x-api-key"]).toBe("k");
+    expect(config.defaultHeaders["X-RapidAPI-Key"]).toBe("k");
   });
 
   it("honours the historyPlan option", () => {
@@ -156,14 +203,46 @@ describe("SkyLink over the wire", () => {
     await teardownMockAgent();
   });
 
+  /**
+   * The rest of this suite exercises transport behaviour that is identical on both
+   * channels, so it pins `direct` and keeps the `/v3.1` mock paths. The two tests
+   * below cover the channels themselves.
+   */
   function client(options: ClientOptions = {}): SkyLink {
-    return new SkyLink({ apiKey: "test-key", sleep: async () => undefined, ...options });
+    return new SkyLink({
+      apiKey: "test-key",
+      provider: "direct",
+      sleep: async () => undefined,
+      ...options,
+    });
   }
+
+  it("issues a RapidAPI request by default: no version prefix, both marketplace headers", async () => {
+    mockJson({
+      origin: RAPIDAPI_ORIGIN,
+      path: "/weather/metar/KJFK",
+      body: { raw: "METAR KJFK 121751Z" },
+    });
+
+    const data = await new SkyLink({ apiKey: "rapid-key" }).request<{ raw: string }>({
+      method: "GET",
+      path: "/weather/metar/KJFK",
+    });
+
+    expect(data.raw).toBe("METAR KJFK 121751Z");
+    const request = requests[0];
+    expect(request?.origin).toBe(RAPIDAPI_ORIGIN);
+    expect(request?.path).toBe("/weather/metar/KJFK");
+    expect(request?.headers["x-rapidapi-key"]).toBe("rapid-key");
+    expect(request?.headers["x-rapidapi-host"]).toBe("skylink-api.p.rapidapi.com");
+    expect(request?.headers["user-agent"]).toBe(`skylink-api-node/${VERSION}`);
+    expect(request?.headers["x-api-key"]).toBeUndefined();
+  });
 
   it("issues a direct-channel request with the versioned path and x-api-key", async () => {
     mockJson({ path: `${DIRECT_PREFIX}/weather/metar/KJFK`, body: { raw: "METAR KJFK 121751Z" } });
 
-    const data = await client().request<{ raw: string }>({
+    const data = await client({ provider: "direct" }).request<{ raw: string }>({
       method: "GET",
       path: "/weather/metar/KJFK",
     });
@@ -175,26 +254,6 @@ describe("SkyLink over the wire", () => {
     expect(request?.headers["x-api-key"]).toBe("test-key");
     expect(request?.headers["user-agent"]).toBe(`skylink-api-node/${VERSION}`);
     expect(request?.headers["x-rapidapi-key"]).toBeUndefined();
-  });
-
-  it("issues a RapidAPI request without the version prefix and with both marketplace headers", async () => {
-    mockJson({
-      origin: RAPIDAPI_ORIGIN,
-      path: "/weather/metar/KJFK",
-      body: { raw: "METAR KJFK" },
-    });
-
-    await client({ provider: "rapidapi", apiKey: "rapid-key" }).request({
-      method: "GET",
-      path: "/weather/metar/KJFK",
-    });
-
-    const request = requests[0];
-    expect(request?.origin).toBe(RAPIDAPI_ORIGIN);
-    expect(request?.path).toBe("/weather/metar/KJFK");
-    expect(request?.headers["x-rapidapi-key"]).toBe("rapid-key");
-    expect(request?.headers["x-rapidapi-host"]).toBe("skylink-api.p.rapidapi.com");
-    expect(request?.headers["x-api-key"]).toBeUndefined();
   });
 
   it("targets a custom baseUrl", async () => {
@@ -379,6 +438,136 @@ describe("SkyLink over the wire", () => {
   });
 });
 
+describe("SkyLink.fromEnv", () => {
+  const saved: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    for (const key of ENV_KEYS) saved[key] = process.env[key];
+    clearEnv();
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+  });
+
+  it("reads the key of the default channel from the environment", () => {
+    process.env.RAPIDAPI_KEY = "env-rapid";
+    const sky = SkyLink.fromEnv();
+    expect(sky.config.apiKey).toBe("env-rapid");
+    expect(sky.config.provider).toBe("rapidapi");
+  });
+
+  it("applies overrides other than the key", () => {
+    process.env.SKYLINK_API_KEY = "env-direct";
+    const sky = SkyLink.fromEnv({ provider: "direct", timeout: 5_000, historyPlan: "mega" });
+    expect(sky.config.apiKey).toBe("env-direct");
+    expect(sky.config.baseUrl).toBe(DIRECT_BASE_URL);
+    expect(sky.config.timeout).toBe(5_000);
+    expect(sky.config.historyPlan).toBe("mega");
+  });
+
+  it("fails the same way the constructor does when the variable is unset", () => {
+    expect(() => SkyLink.fromEnv()).toThrow(AuthenticationError);
+  });
+});
+
+describe("SkyLink.withOptions", () => {
+  function client(options: ClientOptions = {}): SkyLink {
+    return new SkyLink({ apiKey: "test-key", provider: "direct", ...options });
+  }
+
+  it("overrides only what it is given and keeps the rest", () => {
+    const sky = client({ timeout: 1_000, maxRetries: 1, historyPlan: "mega" });
+    const clone = sky.withOptions({ timeout: 90_000 });
+
+    expect(clone.config.timeout).toBe(90_000);
+    expect(clone.config.maxRetries).toBe(1);
+    expect(clone.config.historyPlan).toBe("mega");
+    expect(clone.config.provider).toBe("direct");
+    expect(clone.config.apiKey).toBe("test-key");
+    expect(clone.baseUrl).toBe(sky.baseUrl);
+    // The original is untouched.
+    expect(sky.config.timeout).toBe(1_000);
+  });
+
+  it("reuses the same fetch, so the clone shares one connection pool", () => {
+    const fetchImpl: FetchLike = async () => new Response("{}");
+    const sky = client({ fetch: fetchImpl });
+    expect(sky.withOptions({ maxRetries: 0 }).config.fetch).toBe(sky.config.fetch);
+  });
+
+  it("merges defaultHeaders over the original instead of replacing them", () => {
+    const sky = client({ defaultHeaders: { "X-Trace": "1", "X-Keep": "yes" } });
+    const clone = sky.withOptions({ defaultHeaders: { "X-Trace": "2" } });
+
+    expect(clone.config.defaultHeaders["X-Trace"]).toBe("2");
+    expect(clone.config.defaultHeaders["X-Keep"]).toBe("yes");
+    expect(clone.config.defaultHeaders["x-api-key"]).toBe("test-key");
+    expect(sky.config.defaultHeaders["X-Trace"]).toBe("1");
+  });
+
+  it("gives the clone its own namespaces and its own quota state", async () => {
+    const sky = client();
+    const clone = sky.withOptions({ maxRetries: 0 });
+
+    expect(clone).not.toBe(sky);
+    expect(clone.weather).not.toBe(sky.weather);
+    expect(clone.compose).not.toBe(sky.compose);
+    // Namespaces point at their own client, never at the one they were cloned from.
+    expect((clone.weather as unknown as { client: SkyLink }).client).toBe(clone);
+    expect(clone.lastRateLimit).toBeNull();
+  });
+
+  it("keeps a keyless staging client keyless", () => {
+    const sky = new SkyLink({ baseUrl: "http://localhost:8081/v3.1" });
+    const clone = sky.withOptions({ timeout: 1_000 });
+
+    expect(clone.config.apiKey).toBeNull();
+    expect(clone.baseUrl).toBe("http://localhost:8081/v3.1");
+    expect(clone.config.defaultHeaders["x-api-key"]).toBeUndefined();
+  });
+
+  it("validates the overrides like the constructor does", () => {
+    expect(() => client().withOptions({ timeout: 0 })).toThrow(SkyLinkError);
+    expect(() => client().withOptions({ maxRetries: -1 })).toThrow(SkyLinkError);
+  });
+});
+
+describe("SkyLink inspection", () => {
+  it("describes the client without leaking the key", () => {
+    const sky = new SkyLink({ apiKey: "super-secret-key-1234", provider: "direct" });
+    const text = sky.toString();
+
+    expect(text).not.toContain("super-secret-key-1234");
+    expect(text).toContain("apiKey=****1234");
+    expect(text).toContain("provider=direct");
+    expect(text).toContain(DIRECT_BASE_URL);
+    expect(text).toContain("timeout=30000ms");
+    expect(text).toContain("maxRetries=3");
+    expect(text).toContain("historyPlan=ultra");
+    expect(text).toContain("cache=off");
+  });
+
+  it("masks a key too short to shorten, and says so when there is none", () => {
+    expect(new SkyLink({ apiKey: "abcd", provider: "direct" }).toString()).toContain("apiKey=****");
+    expect(new SkyLink({ baseUrl: "http://localhost:8081" }).toString()).toContain("apiKey=none");
+  });
+
+  it("names the cache when there is one", () => {
+    const sky = new SkyLink({ apiKey: "k", cache: new MemoryCache({ defaultTtl: 1_000 }) });
+    expect(sky.toString()).toContain("cache=MemoryCache");
+  });
+
+  it("uses the same text for util.inspect and console.log", () => {
+    const sky = new SkyLink({ apiKey: "super-secret-key-1234" });
+    expect(inspect(sky)).toBe(sky.toString());
+    expect(inspect(sky)).not.toContain("super-secret-key-1234");
+  });
+});
+
 describe("SkyLink with an injected fetch", () => {
   it("uses the custom implementation instead of the global fetch", async () => {
     const seen: { url: string; init?: RequestInit }[] = [];
@@ -390,7 +579,11 @@ describe("SkyLink with an injected fetch", () => {
       });
     };
 
-    const data = await new SkyLink({ apiKey: "k", fetch: customFetch }).request<{ ok: boolean }>({
+    const data = await new SkyLink({
+      apiKey: "k",
+      provider: "direct",
+      fetch: customFetch,
+    }).request<{ ok: boolean }>({
       method: "GET",
       path: "/health",
       query: { verbose: true },

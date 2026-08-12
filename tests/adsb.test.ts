@@ -3,11 +3,12 @@ import { SkyLink } from "../src/client.js";
 import type { ClientOptions } from "../src/core/config.js";
 import { SkyLinkError } from "../src/core/errors.js";
 import type {
+  AdsbAircraft,
   AdsbAircraftResponse,
   AdsbHealthResponse,
   AdsbStatisticsResponse,
 } from "../src/models/adsb.js";
-import { Adsb } from "../src/resources/adsb.js";
+import { Adsb, DEFAULT_ITER_PAGE_SIZE, MAX_ITER_PAGE_SIZE } from "../src/resources/adsb.js";
 import { loadFixture } from "./helpers/fixtures.js";
 import {
   DIRECT_ORIGIN,
@@ -22,7 +23,14 @@ import {
 const feedFixture = loadFixture<AdsbAircraftResponse>("adsb_aircraft");
 
 function adsb(options: ClientOptions = {}): Adsb {
-  return new Adsb(new SkyLink({ apiKey: "test-key", sleep: async () => undefined, ...options }));
+  return new Adsb(
+    new SkyLink({
+      apiKey: "test-key",
+      provider: "direct",
+      sleep: async () => undefined,
+      ...options,
+    }),
+  );
 }
 
 beforeEach(() => {
@@ -251,6 +259,135 @@ describe("adsb.health", () => {
     expect(health.active_aircraft_count).toBe(0);
     expect(health.connection_uptime).toBeCloseTo(128.5);
     expect(health.last_message_received).toBeNull();
+  });
+});
+
+describe("adsb.iterAircraft", () => {
+  const template = feedFixture.aircraft[0] as AdsbAircraft;
+
+  function page(...icao24s: string[]): AdsbAircraftResponse {
+    return {
+      aircraft: icao24s.map((icao24) => ({ ...template, icao24 })),
+      total_count: 5,
+      timestamp: feedFixture.timestamp,
+    };
+  }
+
+  async function collect(source: AsyncIterable<AdsbAircraft>): Promise<string[]> {
+    const out: string[] = [];
+    for await (const state of source) out.push(state.icao24);
+    return out;
+  }
+
+  it("pages with limit/offset until a short page ends it", async () => {
+    mockJson({ path: /^\/v3\.1\/adsb\/aircraft\?/, body: page("a00001", "a00002") });
+    mockJson({ path: /^\/v3\.1\/adsb\/aircraft\?/, body: page("a00003", "a00004") });
+    mockJson({ path: /^\/v3\.1\/adsb\/aircraft\?/, body: page("a00005") });
+
+    const seen = await collect(adsb().iterAircraft({}, { pageSize: 2 }));
+
+    expect(seen).toEqual(["a00001", "a00002", "a00003", "a00004", "a00005"]);
+    expect(requests.map((r) => r.fullPath)).toEqual([
+      "/v3.1/adsb/aircraft?limit=2&offset=0",
+      "/v3.1/adsb/aircraft?limit=2&offset=2",
+      "/v3.1/adsb/aircraft?limit=2&offset=4",
+    ]);
+  });
+
+  it("stops on an empty first page without a second request", async () => {
+    mockJson({ path: /^\/v3\.1\/adsb\/aircraft\?/, body: page() });
+
+    expect(await collect(adsb().iterAircraft({}, { pageSize: 2 }))).toEqual([]);
+    expect(requests).toHaveLength(1);
+  });
+
+  it("stops mid-page once maxItems is reached", async () => {
+    mockJson({ path: /^\/v3\.1\/adsb\/aircraft\?/, body: page("a00001", "a00002") });
+    mockJson({ path: /^\/v3\.1\/adsb\/aircraft\?/, body: page("a00003") });
+
+    const seen = await collect(adsb().iterAircraft({}, { pageSize: 2, maxItems: 3 }));
+
+    expect(seen).toEqual(["a00001", "a00002", "a00003"]);
+    // The last page asks for exactly the remaining item, not a whole page.
+    expect(requests.map((r) => r.fullPath)).toEqual([
+      "/v3.1/adsb/aircraft?limit=2&offset=0",
+      "/v3.1/adsb/aircraft?limit=1&offset=2",
+    ]);
+  });
+
+  it("truncates within the first page when maxItems is smaller than it", async () => {
+    mockJson({ path: /^\/v3\.1\/adsb\/aircraft\?/, body: page("a00001", "a00002", "a00003") });
+
+    const seen = await collect(adsb().iterAircraft({}, { pageSize: 10, maxItems: 2 }));
+
+    expect(seen).toEqual(["a00001", "a00002"]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.query.get("limit")).toBe("2");
+  });
+
+  it("issues no request at all for maxItems: 0", async () => {
+    expect(await collect(adsb().iterAircraft({}, { maxItems: 0 }))).toEqual([]);
+    expect(requests).toHaveLength(0);
+  });
+
+  it("gives up when the API ignores offset and repeats a page", async () => {
+    // Same two aircraft, twice: without this guard the iterator would loop forever.
+    mockJson({ path: /^\/v3\.1\/adsb\/aircraft\?/, body: page("a00001", "a00002") });
+    mockJson({ path: /^\/v3\.1\/adsb\/aircraft\?/, body: page("a00001", "a00002") });
+
+    const seen = await collect(adsb().iterAircraft({}, { pageSize: 2 }));
+
+    expect(seen).toEqual(["a00001", "a00002"]);
+    expect(requests).toHaveLength(2);
+  });
+
+  it("defaults to a page of 100 and clamps an oversized one", async () => {
+    mockJson({ path: /^\/v3\.1\/adsb\/aircraft\?/, body: page() });
+    mockJson({ path: /^\/v3\.1\/adsb\/aircraft\?/, body: page() });
+
+    await collect(adsb().iterAircraft());
+    await collect(adsb().iterAircraft({}, { pageSize: 100_000 }));
+
+    expect(requests[0]?.query.get("limit")).toBe(String(DEFAULT_ITER_PAGE_SIZE));
+    expect(requests[1]?.query.get("limit")).toBe(String(MAX_ITER_PAGE_SIZE));
+  });
+
+  it("keeps the filters, honours a starting offset and forwards request options", async () => {
+    mockJson({ path: /^\/v3\.1\/adsb\/aircraft\?/, body: page("a00001") });
+
+    await collect(
+      adsb().iterAircraft(
+        { bbox: [51, -1, 52, 0], min_alt: 10000, offset: 40, limit: 999 },
+        { pageSize: 5, headers: { "X-Trace": "iter" } },
+      ),
+    );
+
+    // `limit` from the params is ignored; `pageSize` owns it.
+    expect(requests[0]?.fullPath).toBe(
+      "/v3.1/adsb/aircraft?bbox=51%2C-1%2C52%2C0&min_alt=10000&limit=5&offset=40",
+    );
+    expect(requests[0]?.headers["x-trace"]).toBe("iter");
+  });
+
+  it("rejects an unusable page size or item cap before touching the network", () => {
+    expect(() => adsb().iterAircraft({}, { pageSize: 0 })).toThrow(SkyLinkError);
+    expect(() => adsb().iterAircraft({}, { pageSize: 2.5 })).toThrow(/positive integer/);
+    expect(() => adsb().iterAircraft({}, { maxItems: -1 })).toThrow(/non-negative integer/);
+    expect(requests).toHaveLength(0);
+  });
+
+  it("propagates an error from a later page", async () => {
+    mockJson({ path: /^\/v3\.1\/adsb\/aircraft\?/, body: page("a00001", "a00002") });
+    mockError({ path: /^\/v3\.1\/adsb\/aircraft\?/, status: 500, body: { detail: "boom" } });
+
+    const seen: string[] = [];
+    await expect(async () => {
+      for await (const state of adsb({ maxRetries: 0 }).iterAircraft({}, { pageSize: 2 })) {
+        seen.push(state.icao24);
+      }
+    }).rejects.toBeInstanceOf(SkyLinkError);
+
+    expect(seen).toEqual(["a00001", "a00002"]);
   });
 });
 

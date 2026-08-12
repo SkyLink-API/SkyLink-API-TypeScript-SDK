@@ -150,7 +150,12 @@ describe("error mapping over the wire", () => {
   });
 
   function client(): SkyLink {
-    return new SkyLink({ apiKey: "key", maxRetries: 0, sleep: async () => undefined });
+    return new SkyLink({
+      apiKey: "key",
+      provider: "direct",
+      maxRetries: 0,
+      sleep: async () => undefined,
+    });
   }
 
   it("throws AuthenticationError with the gateway code on 401", async () => {

@@ -17,6 +17,96 @@
         "default": "./dist/index.cjs"
       }
     },
+    "./units": {
+      "import": {
+        "types": "./dist/units.d.ts",
+        "default": "./dist/units.js"
+      },
+      "require": {
+        "types": "./dist/units.d.cts",
+        "default": "./dist/units.cjs"
+      }
+    },
+    "./spatial": {
+      "import": {
+        "types": "./dist/spatial.d.ts",
+        "default": "./dist/spatial.js"
+      },
+      "require": {
+        "types": "./dist/spatial.d.cts",
+        "default": "./dist/spatial.cjs"
+      }
+    },
+    "./idents": {
+      "import": {
+        "types": "./dist/idents.d.ts",
+        "default": "./dist/idents.js"
+      },
+      "require": {
+        "types": "./dist/idents.d.cts",
+        "default": "./dist/idents.cjs"
+      }
+    },
+    "./weather": {
+      "import": {
+        "types": "./dist/weather.d.ts",
+        "default": "./dist/weather.js"
+      },
+      "require": {
+        "types": "./dist/weather.d.cts",
+        "default": "./dist/weather.cjs"
+      }
+    },
+    "./geojson": {
+      "import": {
+        "types": "./dist/geojson.d.ts",
+        "default": "./dist/geojson.js"
+      },
+      "require": {
+        "types": "./dist/geojson.d.cts",
+        "default": "./dist/geojson.cjs"
+      }
+    },
+    "./batch": {
+      "import": {
+        "types": "./dist/batch.d.ts",
+        "default": "./dist/batch.js"
+      },
+      "require": {
+        "types": "./dist/batch.d.cts",
+        "default": "./dist/batch.cjs"
+      }
+    },
+    "./sentinels": {
+      "import": {
+        "types": "./dist/sentinels.d.ts",
+        "default": "./dist/sentinels.js"
+      },
+      "require": {
+        "types": "./dist/sentinels.d.cts",
+        "default": "./dist/sentinels.cjs"
+      }
+    },
+    "./cache": {
+      "import": {
+        "types": "./dist/cache.d.ts",
+        "default": "./dist/cache.js"
+      },
+      "require": {
+        "types": "./dist/cache.d.cts",
+        "default": "./dist/cache.cjs"
+      }
+    },
+    "./csv": {
+      "import": {
+        "types": "./dist/csv.d.ts",
+        "default": "./dist/csv.js"
+      },
+      "require": {
+        "types": "./dist/csv.d.cts",
+        "default": "./dist/csv.cjs"
+      }
+    },
     "./package.json": "./package.json"
   },
   "files": ["dist"],

@@ -18,7 +18,14 @@ import {
 const chartsFixture = loadFixture<ChartsResponse>("charts");
 
 function charts(options: ClientOptions = {}): Charts {
-  return new Charts(new SkyLink({ apiKey: "test-key", sleep: async () => undefined, ...options }));
+  return new Charts(
+    new SkyLink({
+      apiKey: "test-key",
+      provider: "direct",
+      sleep: async () => undefined,
+      ...options,
+    }),
+  );
 }
 
 beforeEach(() => {

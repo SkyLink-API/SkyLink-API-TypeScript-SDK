@@ -25,7 +25,14 @@ const {
 } = carbonFixture;
 
 function carbon(options: ClientOptions = {}): Carbon {
-  return new Carbon(new SkyLink({ apiKey: "test-key", sleep: async () => undefined, ...options }));
+  return new Carbon(
+    new SkyLink({
+      apiKey: "test-key",
+      provider: "direct",
+      sleep: async () => undefined,
+      ...options,
+    }),
+  );
 }
 
 beforeEach(() => {

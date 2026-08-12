@@ -3,9 +3,11 @@
  * response decoding. Every resource method ultimately funnels through {@link execute}.
  */
 
+import type { CacheProtocol } from "../helpers/cache.js";
 import type { ResolvedConfig } from "./config.js";
 import { APIConnectionError, APITimeoutError, createStatusError, SkyLinkError } from "./errors.js";
-import { buildQueryString } from "./query.js";
+import { operationOf } from "./operations.js";
+import { buildQueryString, buildSearchParams } from "./query.js";
 import { parseRateLimit, type RateLimitInfo } from "./ratelimit.js";
 import {
   backoffDelay,
@@ -14,6 +16,7 @@ import {
   shouldRetryStatus,
 } from "./retry.js";
 import type { Headers, RequestOptions, RequestSpec, ResponseKind } from "./types.js";
+import { warn } from "./warn.js";
 
 /** Envelope returned by {@link execute}: decoded payload plus response metadata. */
 export interface APIResponse<T> {
@@ -21,6 +24,14 @@ export interface APIResponse<T> {
   response: Response;
   rateLimit: RateLimitInfo | null;
 }
+
+/**
+ * Response header the transport puts on a synthetic response served from the cache.
+ *
+ * A cache hit has no real `Response` behind it, so one is constructed from the stored
+ * body; this header is how `requestWithResponse()` can tell the two apart.
+ */
+export const CACHE_HIT_HEADER = "x-skylink-cache";
 
 /** Callbacks the client uses to observe every response, successful or not. */
 export interface TransportHooks {
@@ -100,28 +111,119 @@ async function readErrorBody(response: Response, headers: Headers): Promise<unkn
   return text;
 }
 
-async function decodeBody<T>(response: Response, kind: ResponseKind): Promise<T> {
-  if (kind === "none" || response.status === 204) {
-    // Drain so the connection can be reused.
-    await response.arrayBuffer().catch(() => undefined);
-    return undefined as T;
-  }
-  if (kind === "bytes") {
-    return new Uint8Array(await response.arrayBuffer()) as T;
-  }
-  if (kind === "text") {
-    return (await response.text()) as T;
-  }
-
-  const text = await response.text();
+function parseJsonBody<T>(text: string, where: string, status: number): T {
   if (text.trim() === "") return undefined as T;
   try {
     return JSON.parse(text) as T;
   } catch (cause) {
-    throw new SkyLinkError(
-      `Could not parse JSON response from ${response.url || "the API"} (status ${response.status}).`,
-      { cause },
-    );
+    throw new SkyLinkError(`Could not parse JSON response from ${where} (status ${status}).`, {
+      cause,
+    });
+  }
+}
+
+/**
+ * Decode a success body, and hand back the raw text when there is one.
+ *
+ * The raw text is what the cache stores (see {@link readCachedBody}); `null` for the
+ * kinds that are not cached.
+ */
+async function decodeBody<T>(
+  response: Response,
+  kind: ResponseKind,
+): Promise<{ data: T; raw: string | null }> {
+  if (kind === "none" || response.status === 204) {
+    // Drain so the connection can be reused.
+    await response.arrayBuffer().catch(() => undefined);
+    return { data: undefined as T, raw: null };
+  }
+  if (kind === "bytes") {
+    return { data: new Uint8Array(await response.arrayBuffer()) as T, raw: null };
+  }
+  if (kind === "text") {
+    const text = await response.text();
+    return { data: text as T, raw: text };
+  }
+
+  const text = await response.text();
+  return { data: parseJsonBody<T>(text, response.url || "the API", response.status), raw: text };
+}
+
+// ---------------------------------------------------------------------------
+// Response cache
+// ---------------------------------------------------------------------------
+
+/** What a cache entry holds: the raw body plus the kind it was decoded as. */
+interface CachedBody {
+  kind: "json" | "text";
+  body: string;
+}
+
+/** The response kinds worth caching: immutable strings, decoded fresh on every hit. */
+function cacheableKind(kind: ResponseKind): kind is "json" | "text" {
+  return kind === "json" || kind === "text";
+}
+
+/**
+ * Cache key for one request: method, path, **sorted** query, provider and base URL.
+ *
+ * Sorting the query makes `?a=1&b=2` and `?b=2&a=1` one entry, which they are. The
+ * provider and base URL are in the key because two clients can share a store and a
+ * staging response must never be served to a production client.
+ *
+ * The API key is deliberately **not** part of the key: it is not part of the
+ * response's identity, and putting a credential into a key that may be logged or
+ * persisted to Redis is how credentials leak. Do not share one store between clients
+ * whose keys see different data.
+ */
+export function buildCacheKey(
+  method: string,
+  path: string,
+  query: RequestSpec["query"],
+  provider: string,
+  baseUrl: string,
+): string {
+  const sorted = [...buildSearchParams(query).entries()]
+    .sort((a, b) => (a[0] === b[0] ? (a[1] < b[1] ? -1 : 1) : a[0] < b[0] ? -1 : 1))
+    .map(([name, value]) => `${name}=${value}`)
+    .join("&");
+  return `${method} ${path}?${sorted}|${provider}|${baseUrl}`;
+}
+
+/**
+ * Read an entry and turn it back into a body.
+ *
+ * The store is user-supplied and may hold anything (a stale format, another
+ * library's key, a corrupted Redis value), so the entry is validated before use.
+ * A mismatch is treated as a miss, never as an error.
+ */
+function readCachedBody(value: unknown, kind: "json" | "text"): string | null {
+  if (typeof value !== "object" || value === null) return null;
+  const entry = value as Partial<CachedBody>;
+  if (entry.kind !== kind || typeof entry.body !== "string") return null;
+  return entry.body;
+}
+
+/** The synthetic `Response` handed back on a cache hit. */
+function cachedResponse(body: string, kind: "json" | "text"): Response {
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "content-type": kind === "json" ? "application/json" : "text/plain",
+      [CACHE_HIT_HEADER]: "hit",
+    },
+  });
+}
+
+/** TTL for this call, in milliseconds; `0` when the store has no policy for it. */
+function cacheTtl(cache: CacheProtocol, spec: RequestSpec): number {
+  if (typeof cache.ttlFor !== "function") return 0;
+  try {
+    const ttl = cache.ttlFor(operationOf(spec));
+    return typeof ttl === "number" && Number.isFinite(ttl) && ttl > 0 ? ttl : 0;
+  } catch (cause) {
+    warn("cache.ttlFor() threw; the response will not be cached", cause);
+    return 0;
   }
 }
 
@@ -130,6 +232,10 @@ async function decodeBody<T>(response: Response, kind: ResponseKind): Promise<T>
  *
  * The deadline is enforced per attempt with an `AbortController`; an externally
  * supplied `options.signal` aborts the call immediately and is never retried.
+ *
+ * When the client was given a cache, this is the **one** place it is consulted: a
+ * successful GET whose operation has a non-zero TTL is looked up before the request
+ * and stored after it. Nothing else is cached — not POSTs, not errors, not PDFs.
  */
 export async function execute<T>(
   spec: RequestSpec,
@@ -140,6 +246,34 @@ export async function execute<T>(
   const responseKind: ResponseKind = spec.responseKind ?? "json";
   const method = spec.method;
   const url = buildUrl(config.baseUrl, spec.path, spec.query);
+
+  // Cache lookup. `ttl > 0` is the whole opt-in: with no cache, or no TTL configured
+  // for this operation, `cacheKey` stays null and not a line below changes.
+  const cache = config.cache;
+  const cacheKind = cacheableKind(responseKind) ? responseKind : null;
+  const ttl = cache && cacheKind && method === "GET" ? cacheTtl(cache, spec) : 0;
+  const cacheKey =
+    cache && cacheKind && ttl > 0
+      ? buildCacheKey(method, spec.path, spec.query, config.provider, config.baseUrl)
+      : null;
+
+  if (cache && cacheKey !== null && cacheKind !== null) {
+    let stored: unknown;
+    try {
+      stored = cache.get(cacheKey);
+    } catch (cause) {
+      warn("cache.get() threw; falling through to the network", cause);
+    }
+    const body = stored === undefined ? null : readCachedBody(stored, cacheKind);
+    if (body !== null) {
+      const data =
+        cacheKind === "text" ? (body as T) : parseJsonBody<T>(body, "the response cache", 200);
+      // No response means no quota headers: a cache hit costs nothing, so it must not
+      // look like a request in `lastRateLimit` or in the quota hooks.
+      return { data, response: cachedResponse(body, cacheKind), rateLimit: null };
+    }
+  }
+
   const timeout = options.timeout ?? config.timeout;
   const maxRetries = options.maxRetries ?? config.maxRetries;
   const hasBody = spec.body !== undefined && spec.body !== null;
@@ -219,7 +353,20 @@ export async function execute<T>(
       throw error;
     }
 
-    const data = await decodeBody<T>(response, responseKind);
+    const { data, raw } = await decodeBody<T>(response, responseKind);
+
+    if (cache && cacheKey !== null && cacheKind !== null && raw !== null) {
+      // The *raw body* is stored, not the decoded object, and every hit re-parses it.
+      // Handing the same object graph to two callers is a real bug: the SDK does not
+      // freeze responses, so the first caller's `delete row.foo` would silently corrupt
+      // the second one's. Re-parsing is a few microseconds against a saved round trip.
+      try {
+        cache.set(cacheKey, { kind: cacheKind, body: raw } satisfies CachedBody, ttl);
+      } catch (cause) {
+        warn("cache.set() threw; the response was not cached", cause);
+      }
+    }
+
     return { data, response, rateLimit };
   }
 }

@@ -17,7 +17,14 @@ import {
 const ticketsFixture = loadFixture<TicketSearchResponse>("tickets_search");
 
 function tickets(options: ClientOptions = {}): Tickets {
-  return new Tickets(new SkyLink({ apiKey: "test-key", sleep: async () => undefined, ...options }));
+  return new Tickets(
+    new SkyLink({
+      apiKey: "test-key",
+      provider: "direct",
+      sleep: async () => undefined,
+      ...options,
+    }),
+  );
 }
 
 beforeEach(() => {

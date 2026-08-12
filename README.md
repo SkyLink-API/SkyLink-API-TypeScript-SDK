@@ -28,13 +28,13 @@ Requires Node.js 18 or newer (any runtime with a global `fetch`).
 
 ## Quickstart
 
-**Direct** — key from [skylinkapi.com](https://skylinkapi.com), read from `SKYLINK_API_KEY`
-when you do not pass one:
+**RapidAPI** — the default channel. Key from the marketplace listing, read from
+`RAPIDAPI_KEY` (or `SKYLINK_API_KEY`) when you do not pass one:
 
 ```ts
 import { SkyLink } from "skylink-api";
 
-const sky = new SkyLink({ apiKey: process.env.SKYLINK_API_KEY });
+const sky = new SkyLink({ apiKey: process.env.RAPIDAPI_KEY });
 
 const metar = await sky.weather.metar("KJFK", { parsed: true });
 console.log(metar.raw, metar.parsed?.flight_rules);
@@ -43,29 +43,30 @@ const flight = await sky.flightStatus("BA117");
 console.log(flight.status, flight.arrival.estimated_time);
 ```
 
-**RapidAPI** — key from the marketplace listing, read from `RAPIDAPI_KEY`:
+**Direct** — key from [skylinkapi.com](https://skylinkapi.com), read from
+`SKYLINK_API_KEY`:
 
 ```ts
 import { SkyLink } from "skylink-api";
 
 const sky = new SkyLink({
-  provider: "rapidapi",
-  apiKey: process.env.RAPIDAPI_KEY,
+  provider: "direct",
+  apiKey: process.env.SKYLINK_API_KEY,
 });
 
 const metar = await sky.weather.metar("KJFK", { parsed: true });
 ```
 
 Both channels expose the identical method surface. The provider only decides the base URL
-(`https://data.skylinkapi.com/v3.1` vs `https://skylink-api.p.rapidapi.com`) and which
-auth headers are sent (`x-api-key` vs `X-RapidAPI-Key` + `X-RapidAPI-Host`).
+(`https://skylink-api.p.rapidapi.com` vs `https://data.skylinkapi.com/v3.1`) and which
+auth headers are sent (`X-RapidAPI-Key` + `X-RapidAPI-Host` vs `x-api-key`).
 
 ## Configuration
 
 ```ts
 const sky = new SkyLink({
-  provider: "direct",
-  apiKey: process.env.SKYLINK_API_KEY,
+  provider: "rapidapi",
+  apiKey: process.env.RAPIDAPI_KEY,
   timeout: 30_000,
   maxRetries: 3,
   historyPlan: "ultra",
@@ -75,8 +76,8 @@ const sky = new SkyLink({
 
 | Option           | Type                            | Default                                  | Notes |
 | ---------------- | ------------------------------- | ---------------------------------------- | ----- |
-| `provider`       | `"direct" \| "rapidapi"`        | `"direct"`                               | Picks the base URL and the auth header pair. |
-| `apiKey`         | `string`                        | `SKYLINK_API_KEY` / `RAPIDAPI_KEY`       | Env var chosen by `provider`. Missing key throws `AuthenticationError` at construction — unless `baseUrl` is set explicitly. |
+| `provider`       | `"direct" \| "rapidapi"`        | `"rapidapi"`                             | Picks the base URL and the auth header pair. |
+| `apiKey`         | `string`                        | `RAPIDAPI_KEY` → `SKYLINK_API_KEY` (rapidapi), `SKYLINK_API_KEY` (direct) | Env var chosen by `provider`; the RapidAPI channel falls back to `SKYLINK_API_KEY`, the direct channel never reads `RAPIDAPI_KEY`. Missing key throws `AuthenticationError` at construction — unless `baseUrl` is set explicitly. |
 | `baseUrl`        | `string`                        | per provider                             | Staging, proxies, a local backend. Trailing slashes are trimmed. Setting it makes `apiKey` optional (for `DISABLE_AUTH` deployments). |
 | `timeout`        | `number` (ms)                   | `30_000`                                 | Overall deadline **per attempt**, enforced with `AbortController`. |
 | `maxRetries`     | `number`                        | `3`                                      | Retries *after* the first attempt. `0` disables retrying. |
@@ -308,6 +309,227 @@ const mixed = await sky.distance({ from_lat: 40.64, from_lon: -73.78, to_icao: "
 Each endpoint of `distance` is either an airport code **or** a lat/lon pair; the types
 prevent mixing both forms on the same endpoint.
 
+## Developer experience
+
+Everything below is built on the endpoints above — no new API surface, just the code you
+would otherwise write yourself. All of it is optional and none of it changes how a plain
+call behaves.
+
+### `sky.batch` — the same call for many identifiers
+
+The API has no bulk endpoint, so twenty airports are twenty calls. `sky.batch` keeps five
+in flight (per-second rate limits are real) and returns **one entry per input**, holding
+either the response or the error that call failed with — one bad code costs you that
+airport, not the board.
+
+```ts
+import { batch, SkyLink } from "skylink-api";
+
+const results = await sky.batch.metars(["KJFK", "EGLL", "ZZZZ"], { concurrency: 5 });
+for (const [icao, result] of Object.entries(results)) {
+  if (batch.isBatchError(result)) console.warn(icao, result.message);
+  else console.log(icao, result.raw);
+}
+
+const ok = batch.successes(results);   // { KJFK: …, EGLL: … }
+const bad = batch.failures(results);   // { ZZZZ: NotFoundError }
+batch.throwForErrors(results);         // or make it all-or-nothing
+```
+
+Methods: `metars`, `tafs`, `notams`, `airports` (classifies each code as IATA or ICAO),
+`flightStatuses`. Duplicate inputs collapse into a single request.
+
+### `sky.compose` — multi-endpoint aggregates
+
+One call where an application would make seven, in parallel. **A brief degrades into
+`errors`, it does not throw**: a part that fails is `null` and its `SkyLinkError` is filed
+under that part's own name. Only the primary call throws — the airport lookup of an
+airport brief, the flight status of a flight brief, the board of `schedulesWithStatus` —
+because without it the aggregate is meaningless.
+
+```ts
+const brief = await sky.compose.airportBrief("EGLL", { schedulesLimit: 5 });
+console.log(brief.metar?.parsed?.flight_rules, brief.notams?.total);
+for (const [part, error] of Object.entries(brief.errors)) {
+  console.warn(`${part} unavailable:`, error.message);   // e.g. delays: EGLL is not FAA
+}
+```
+
+| Method | Joins |
+| --- | --- |
+| `airportBrief(icao, { include?, exclude?, schedulesLimit? })` | airport, METAR, TAF, NOTAMs, FAA delays, charts, both boards — eight requests at once |
+| `flightBrief(flightNumber, { include?, exclude? })` | status → registry lookup, callsign → route → CO₂ |
+| `routeBrief(origin, destination, { aircraftType?, passengers? })` | distance, block time, both ends' weather, CO₂ |
+| `enrichAdsb(states, { maxLookups?, concurrency?, photos? })` | live ADS-B rows × the airframe registry, one lookup per distinct `icao24` |
+| `schedulesWithStatus(code, { direction?, limit?, concurrency? })` | a board × the live status of each flight number on it |
+| `northAmericaCountries()` | the 41 countries `geo.countries({ continent: "NA" })` cannot return |
+
+`include`/`exclude` decide what is **requested**, so a part you do not want costs no
+quota; the names are the result's own field names (`AIRPORT_BRIEF_PARTS`,
+`FLIGHT_BRIEF_PARTS`, `ROUTE_BRIEF_PARTS`). Weather in the briefs is fetched decoded
+(`parsed: true`), so `brief.metar.parsed` is there for `flightCategory()`.
+
+`northAmericaCountries()` is a **workaround for a backend bug**: the reference CSV is read
+with pandas, which parses the literal `NA` as not-a-number, so every North-American row
+arrives with `continent: null` and the server-side filter matches nothing. This fetches the
+full list once and filters client-side — including rows already spelled `"NA"`, so it keeps
+working on the day the backend is fixed.
+
+### Iterators and pollers
+
+`sky.adsb.iterAircraft()` and `sky.history.iterFlights()` hide the two kinds of paging the
+API has — `limit`/`offset` and time windows — behind an async generator:
+
+```ts
+for await (const state of sky.adsb.iterAircraft({ bbox: [51, -1, 52, 0] }, { maxItems: 500 })) {
+  console.log(state.icao24, state.callsign);
+}
+
+for await (const flight of sky.history.iterFlights(
+  { registration: "G-STBA" },
+  { windowDays: 7, maxItems: 500 },
+)) {
+  console.log(flight.flight_id, flight.takeoff_time);
+}
+```
+
+`sky.poll.*` re-asks the two endpoints whose answers change while you watch them. Both
+yield immediately, then every `interval` **milliseconds**, and both ride out 429s and 5xx
+(which say nothing about the subject) instead of ending the loop:
+
+```ts
+// Ends by itself on "Landed"/"Cancelled"/"Diverted"; emits only actual changes.
+for await (const status of sky.poll.flightStatus("BA117", { interval: 30_000 })) {
+  console.log(status.status, status.arrival.estimated_time);
+}
+
+// Diffs against the previous snapshot; the first iteration is the baseline.
+for await (const diff of sky.poll.adsb({ bbox }, { interval: 5_000, maxIterations: 10 })) {
+  diff.appeared.forEach(addMarker);
+  diff.disappeared.forEach(removeMarker);
+  diff.updated.forEach(moveMarker);
+}
+```
+
+Stop them with `break`, with `maxIterations`, or with an `AbortSignal` in the options.
+
+### Helpers
+
+Pure functions — no client, no network — each one there for a specific trap in this API.
+
+```ts
+import { geojson, idents, sentinels, spatial, units, weatherHelpers } from "skylink-api";
+
+spatial.bboxAround(51.47, -0.45, 60);          // "lat1,lon1,lat2,lon2" for the bbox params
+spatial.haversineNm(51.47, -0.45, 40.64, -73.78);
+spatial.trackStats(track.positions);           // distance, duration, altitude/speed extremes
+spatial.simplifyTrack(track.positions, { toleranceKm: 0.5 });
+
+weatherHelpers.flightCategory(metar);          // "VFR" | "MVFR" | "IFR" | "LIFR" | null
+weatherHelpers.ceilingFt(metar);               // lowest BKN/OVC layer, in feet (not hundreds)
+weatherHelpers.isStale(metar);                 // older than 90 minutes
+weatherHelpers.windComponents(metar, 270);     // head/cross component for a runway
+
+units.parseDurationMinutes("7h 23m");          // the ML endpoint's prose → 443
+units.normalizeAltimeter(30.2);                // → { inHg, hPa } whichever unit came in
+units.parseVisibility({ value: null, repr: "P6" });  // P6SM → 6 sm
+
+idents.classifyAirportCode("LHR");             // "iata" — picks between the icao/iata params
+idents.isIcao24("4ca1fb");                     // dispatch for history.positions()
+idents.splitFlightNumber("U21234");            // { airline: "U2", number: "1234" } — not "U21"
+
+sentinels.isFound(lookup);                     // narrows the found:true|false union
+geojson.adsbToGeojson(feed.aircraft);          // [longitude, latitude], the GeoJSON order
+```
+
+### CSV and GeoJSON export
+
+`toCsv` is RFC 4180: a value containing the delimiter, a quote or a line break is quoted
+and escaped rather than silently shifting every column after it. Column names are the
+API's own field names, `null`/`undefined` are empty cells, and nested values become JSON.
+
+```ts
+import { toCsv } from "skylink-api/csv";
+import { writeFile } from "node:fs/promises";
+
+const feed = await sky.adsb.aircraft({ bbox });
+await writeFile("traffic.csv", toCsv(feed.aircraft, {
+  columns: ["icao24", "callsign", "altitude", "ground_speed"],
+}));
+// `delimiter: ";"` for spreadsheets in comma-decimal locales, `"\t"` for a TSV.
+
+await writeFile("traffic.geojson", JSON.stringify(geojson.adsbToGeojson(feed.aircraft)));
+```
+
+`geojson` also exports `trackToGeojson` (a `LineString`, optionally with a point per fix),
+`airportsToGeojson` and `navaidsToGeojson`.
+
+### Cache and quota hooks
+
+**Nothing is cached by default.** A store has to be handed in, *and* the operation needs a
+non-zero TTL — a METAR is worth five minutes, an airport record a day, live ADS-B nothing
+at all, so there is no sane global number. Only successful `GET`s are stored, and expiry
+uses a monotonic clock so a wall-clock jump cannot freeze an entry.
+
+```ts
+import { CACHE_HIT_HEADER, MemoryCache, SkyLink } from "skylink-api";
+
+const sky = new SkyLink({
+  cache: new MemoryCache({
+    ttls: { "weather.metar": 300_000, "airports.*": 86_400_000, "adsb.*": 0 },
+    maxEntries: 200,
+  }),
+});
+
+const res = await sky.requestWithResponse({ method: "GET", path: "/weather/metar/KJFK", responseKind: "json" });
+res.response.headers.get(CACHE_HIT_HEADER); // "hit" when it came from the store
+```
+
+TTLs are milliseconds and resolve most-specific-first: exact name, then `"weather.*"`, then
+`"*"`, then `defaultTtl`. Implement `CacheProtocol` (three synchronous methods) to back it
+with Redis or a KV store.
+
+```ts
+const off = sky.onRateLimit((info) => metrics.gauge("quota", info.remaining ?? 0));
+sky.onQuotaLow((info) => alert(`${info.remaining} of ${info.limit} left`), { threshold: 0.05 });
+off(); // both return an unsubscribe function
+```
+
+`onRateLimit` fires for every response that carried quota headers, with **that response's**
+snapshot rather than the shared `lastRateLimit`. `onQuotaLow` fires **once per crossing**,
+not once per response, and re-arms when the quota window resets.
+
+### `fromEnv` and `withOptions`
+
+```ts
+const sky = SkyLink.fromEnv();                       // RAPIDAPI_KEY / SKYLINK_API_KEY
+const direct = SkyLink.fromEnv({ provider: "direct" });
+
+const patient = sky.withOptions({ timeout: 120_000, maxRetries: 5 });
+const live = sky.withOptions({ cache: null });       // this one always hits the network
+```
+
+A clone keeps the channel, the credentials, the `fetch` and the connection pool, and merges
+`defaultHeaders` over the parent's. It does **not** inherit state: `lastRateLimit` and the
+quota listeners are fresh, so a clone never reports another client's quota. The cache store
+is shared unless overridden. Credentials and `baseUrl` cannot be changed by a clone — build
+a new client for a different API.
+
+### Subpath imports
+
+Every helper module is also its own entry point, for bundles where tree-shaking matters:
+
+```ts
+import { bboxAround } from "skylink-api/spatial";
+import { toCsv } from "skylink-api/csv";
+import { flightCategory } from "skylink-api/weather";
+import { adsbToGeojson } from "skylink-api/geojson";
+```
+
+Available: `skylink-api/units`, `/spatial`, `/idents`, `/weather`, `/geojson`, `/sentinels`,
+`/batch`, `/cache`, `/csv`. Each ships ESM, CJS and declarations, and none of them imports
+the client.
+
 ## Error handling
 
 ### Hierarchy
@@ -386,9 +608,15 @@ if (found.note) console.warn(found.note);
 
 ### Quota
 
-`lastRateLimit` is refreshed from the `X-RateLimit-Requests-{Limit,Remaining,Reset}`
-headers of every response, error responses included, and stays `null` until a response
-actually carries them.
+`lastRateLimit` is refreshed from the quota headers of every response, error responses
+included, and stays `null` until a response actually carries them.
+
+The two channels spell those headers differently, and the SDK reads both:
+`X-RateLimit-Requests-{Limit,Remaining,Reset}` on RapidAPI,
+`X-RateLimit-{Limit,Remaining,Reset}` on the direct channel. When both are present the
+`Requests-` family wins. RapidAPI's decorative
+`X-RateLimit-rapid-free-plans-hard-limit-*` headers describe the marketplace's free-tier
+ceiling rather than your plan and are deliberately ignored.
 
 ```ts
 await sky.adsb.statistics();
@@ -471,9 +699,14 @@ Runnable scripts live in [`examples/`](examples):
 | [`flight-briefing.ts`](examples/flight-briefing.ts) | the `format` overloads and writing the PDF to disk |
 | [`history.ts`](examples/history.ts) | flight search, tracks, both `positions` dispatch forms, `plan: "mega"` |
 | [`webhooks.ts`](examples/webhooks.ts) | the full create → list → update → delete cycle |
+| [`batch.ts`](examples/batch.ts) | many identifiers per call, successes and failures split apart |
+| [`compose-briefs.ts`](examples/compose-briefs.ts) | airport / flight / route briefs, and printing `errors` |
+| [`polling.ts`](examples/polling.ts) | ADS-B diffs and a flight followed to the gate, bounded and abortable |
+| [`helpers-export.ts`](examples/helpers-export.ts) | `bboxAround` + `flightCategory` + GeoJSON and CSV written to disk |
+| [`cache-and-quota.ts`](examples/cache-and-quota.ts) | per-operation cache TTLs, quota hooks, `fromEnv` / `withOptions` |
 
 ```bash
-SKYLINK_API_KEY=... npx tsx examples/weather.ts
+RAPIDAPI_KEY=... npx tsx examples/weather.ts
 ```
 
 ## Documentation
@@ -494,11 +727,22 @@ Integration tests hit a real API instance and are gated behind an environment va
 they never run in the default suite:
 
 ```bash
+# RapidAPI channel (the default) — a key alone is enough
+SKYLINK_TEST_API_KEY=...msh...jsn... npm run test:integration
+
+# direct channel, or a staging container
+SKYLINK_TEST_PROVIDER=direct SKYLINK_TEST_API_KEY=sk_live_... npm run test:integration
 SKYLINK_TEST_BASE_URL=http://localhost:8081/v3.1 npm run test:integration
 ```
 
 The backend's `docker-compose.test.yml` brings up a keyless instance (`DISABLE_AUTH=true`)
 on port 8081 for exactly this purpose.
+
+`tests/integration/live-webhooks.test.ts` is the one suite that writes: it runs the full
+subscription CRUD, all three `ensure()` branches and the plan cap. Webhooks are plan-gated,
+so it arms only on the direct channel (or an explicit `baseUrl`) and reports as skipped
+otherwise. Everything it creates points at an unreachable `example.com` URL and is deleted
+afterwards, pass or fail.
 
 Publishing is automated: pushing a `v*` tag builds the package and runs
 `npm publish --provenance --access public` via OIDC. The npm trusted publisher must be

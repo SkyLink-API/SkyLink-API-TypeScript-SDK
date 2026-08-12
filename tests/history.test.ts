@@ -8,7 +8,11 @@ import type {
   HistoryPositionsResponse,
   HistoryTrackResponse,
 } from "../src/models/history.js";
-import { History } from "../src/resources/history.js";
+import {
+  DEFAULT_ITER_WINDOW_DAYS,
+  HISTORY_MAX_WINDOW_DAYS,
+  History,
+} from "../src/resources/history.js";
 import { loadFixture } from "./helpers/fixtures.js";
 import {
   DIRECT_ORIGIN,
@@ -27,7 +31,14 @@ const trackFixture = loadFixture<HistoryTrackResponse>("history_track");
 const FLIGHT_ID = "7f3c1a54-9d2e-4b8f-a1c6-2e5b7d0f9a13";
 
 function history(options: ClientOptions = {}): History {
-  return new History(new SkyLink({ apiKey: "test-key", sleep: async () => undefined, ...options }));
+  return new History(
+    new SkyLink({
+      apiKey: "test-key",
+      provider: "direct",
+      sleep: async () => undefined,
+      ...options,
+    }),
+  );
 }
 
 beforeEach(() => {
@@ -453,10 +464,298 @@ describe("history.airportTraffic", () => {
   });
 });
 
+describe("history.iterFlights", () => {
+  const ULTRA_FLIGHTS = /^\/v3\.1\/ultra\/history\/flights\?/;
+  const MEGA_FLIGHTS = /^\/v3\.1\/mega\/history\/flights\?/;
+  const DAY_MS = 86_400_000;
+
+  function flightsBody(...ids: string[]): HistoryFlightsResponse {
+    return {
+      filters: flightsFixture.filters,
+      count: ids.length,
+      flights: ids.map((flight_id) => ({ ...flightsFixture.flights[0], flight_id })),
+    };
+  }
+
+  async function collect(source: AsyncIterable<HistoryFlight>): Promise<(string | undefined)[]> {
+    const out: (string | undefined)[] = [];
+    for await (const flight of source) out.push(flight.flight_id);
+    return out;
+  }
+
+  /** `[start, end]` of every request issued, as epoch milliseconds. */
+  function windows(): [number, number][] {
+    return requests.map((r) => [
+      Date.parse(r.query.get("start") ?? ""),
+      Date.parse(r.query.get("end") ?? ""),
+    ]);
+  }
+
+  it("slices the range into windows and walks them newest first", async () => {
+    mockJson({ path: ULTRA_FLIGHTS, body: flightsBody("f-new-1", "f-new-2") });
+    mockJson({ path: ULTRA_FLIGHTS, body: flightsBody("f-old-1") });
+
+    const seen = await collect(
+      history().iterFlights(
+        { registration: "G-STBA", start: "2026-01-01T00:00:00Z", end: "2026-01-15T00:00:00Z" },
+        { windowDays: 7 },
+      ),
+    );
+
+    expect(seen).toEqual(["f-new-1", "f-new-2", "f-old-1"]);
+    expect(requests.map((r) => r.fullPath)).toEqual([
+      "/v3.1/ultra/history/flights?start=2026-01-08T00%3A00%3A00Z&end=2026-01-15T00%3A00%3A00Z&registration=G-STBA",
+      "/v3.1/ultra/history/flights?start=2026-01-01T00%3A00%3A00Z&end=2026-01-08T00%3A00%3A00Z&registration=G-STBA",
+    ]);
+  });
+
+  it("de-duplicates the flights that straddle a window boundary", async () => {
+    mockJson({ path: ULTRA_FLIGHTS, body: flightsBody("f-1", "f-boundary") });
+    mockJson({ path: ULTRA_FLIGHTS, body: flightsBody("f-boundary", "f-2") });
+
+    const seen = await collect(
+      history().iterFlights(
+        { callsign: "BAW117", start: "2026-01-01T00:00:00Z", end: "2026-01-15T00:00:00Z" },
+        { windowDays: 7 },
+      ),
+    );
+
+    expect(seen).toEqual(["f-1", "f-boundary", "f-2"]);
+  });
+
+  it("falls back to a composite key for rows without a flight_id", async () => {
+    const row: HistoryFlight = {
+      icao24: "4CA1FB",
+      callsign: "BAW117",
+      flight_start: "2026-01-09T08:00:00+00:00",
+    };
+    const body = { filters: flightsFixture.filters, count: 1, flights: [row] };
+    mockJson({ path: ULTRA_FLIGHTS, body });
+    mockJson({ path: ULTRA_FLIGHTS, body });
+
+    const seen: HistoryFlight[] = [];
+    for await (const flight of history().iterFlights(
+      { callsign: "BAW117", start: "2026-01-01T00:00:00Z", end: "2026-01-15T00:00:00Z" },
+      { windowDays: 7 },
+    )) {
+      seen.push(flight);
+    }
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.callsign).toBe("BAW117");
+  });
+
+  it("stops mid-window once maxItems is reached", async () => {
+    mockJson({ path: ULTRA_FLIGHTS, body: flightsBody("f-1", "f-2", "f-3") });
+
+    const seen = await collect(
+      history().iterFlights(
+        { callsign: "BAW117", start: "2026-01-01T00:00:00Z", end: "2026-01-15T00:00:00Z" },
+        { windowDays: 7, maxItems: 2 },
+      ),
+    );
+
+    expect(seen).toEqual(["f-1", "f-2"]);
+    // The second window is never requested.
+    expect(requests).toHaveLength(1);
+  });
+
+  it("issues no request at all for maxItems: 0", async () => {
+    const seen = await collect(
+      history().iterFlights({ callsign: "BAW117" }, { maxItems: 0, windowDays: 90 }),
+    );
+
+    expect(seen).toEqual([]);
+    expect(requests).toHaveLength(0);
+  });
+
+  it("keeps walking past an empty window", async () => {
+    mockJson({ path: ULTRA_FLIGHTS, body: flightsBody() });
+    mockJson({ path: ULTRA_FLIGHTS, body: flightsBody("f-old") });
+
+    const seen = await collect(
+      history().iterFlights(
+        { callsign: "BAW117", start: "2026-01-01T00:00:00Z", end: "2026-01-15T00:00:00Z" },
+        { windowDays: 7 },
+      ),
+    );
+
+    expect(seen).toEqual(["f-old"]);
+    expect(requests).toHaveLength(2);
+  });
+
+  it("treats a 200 with {note, count: 0} as an empty window, not an error", async () => {
+    mockJson({ path: ULTRA_FLIGHTS, body: emptyNoteFixture });
+
+    const seen = await collect(
+      history().iterFlights({ registration: "G-ZZZZ" }, { windowDays: 90 }),
+    );
+
+    expect(seen).toEqual([]);
+    expect(requests).toHaveLength(1);
+  });
+
+  it("defaults the range to the plan's whole retention window, ending now", async () => {
+    mockJson({ path: ULTRA_FLIGHTS, body: flightsBody("f-1") });
+    const before = Date.now();
+
+    await collect(history().iterFlights({ callsign: "BAW117" }, { windowDays: 90 }));
+
+    const [[start, end] = [0, 0]] = windows();
+    expect(end).toBeGreaterThanOrEqual(before - 1_000);
+    expect(end - start).toBe(HISTORY_MAX_WINDOW_DAYS.ultra * DAY_MS);
+  });
+
+  it("uses the 365-day retention of the mega plan", async () => {
+    mockJson({ path: MEGA_FLIGHTS, body: flightsBody("f-1") });
+
+    await collect(history().iterFlights({ callsign: "BAW117" }, { windowDays: 365, plan: "mega" }));
+
+    const [[start, end] = [0, 0]] = windows();
+    expect(requests[0]?.path).toBe("/v3.1/mega/history/flights");
+    expect(end - start).toBe(HISTORY_MAX_WINDOW_DAYS.mega * DAY_MS);
+  });
+
+  it("clamps a window wider than the plan allows instead of earning a 422", async () => {
+    mockJson({ path: ULTRA_FLIGHTS, body: flightsBody("f-1") });
+
+    await collect(history().iterFlights({ callsign: "BAW117" }, { windowDays: 400 }));
+
+    const [[start, end] = [0, 0]] = windows();
+    expect(end - start).toBe(HISTORY_MAX_WINDOW_DAYS.ultra * DAY_MS);
+    expect(requests).toHaveLength(1);
+  });
+
+  it("defaults to a seven-day window", async () => {
+    mockJson({ path: ULTRA_FLIGHTS, body: flightsBody("f-1") });
+
+    await collect(
+      history().iterFlights({
+        callsign: "BAW117",
+        start: "2026-01-08T00:00:00Z",
+        end: "2026-01-15T00:00:00Z",
+      }),
+    );
+
+    const [[start, end] = [0, 0]] = windows();
+    expect(end - start).toBe(DEFAULT_ITER_WINDOW_DAYS * DAY_MS);
+  });
+
+  it("lets the options plan win over the params plan", async () => {
+    mockJson({ path: MEGA_FLIGHTS, body: flightsBody("f-1") });
+
+    await collect(
+      history({ historyPlan: "ultra" }).iterFlights(
+        { callsign: "BAW117", plan: "ultra" },
+        { plan: "mega", windowDays: 365 },
+      ),
+    );
+
+    expect(requests[0]?.path).toBe("/v3.1/mega/history/flights");
+    expect(requests[0]?.query.has("plan")).toBe(false);
+  });
+
+  it("reads a zoneless date string as UTC, the way the backend does", async () => {
+    mockJson({ path: ULTRA_FLIGHTS, body: flightsBody("f-1") });
+
+    await collect(
+      history().iterFlights(
+        { callsign: "BAW117", start: "2026-01-08T00:00:00", end: "2026-01-15T00:00:00" },
+        { windowDays: 7 },
+      ),
+    );
+
+    expect(requests[0]?.query.get("start")).toBe("2026-01-08T00:00:00Z");
+    expect(requests[0]?.query.get("end")).toBe("2026-01-15T00:00:00Z");
+  });
+
+  it("accepts Date objects for the range", async () => {
+    mockJson({ path: ULTRA_FLIGHTS, body: flightsBody("f-1") });
+
+    await collect(
+      history().iterFlights(
+        {
+          callsign: "BAW117",
+          start: new Date(Date.UTC(2026, 0, 8)),
+          end: new Date(Date.UTC(2026, 0, 15)),
+        },
+        { windowDays: 7 },
+      ),
+    );
+
+    expect(requests[0]?.fullPath).toBe(
+      "/v3.1/ultra/history/flights?start=2026-01-08T00%3A00%3A00Z&end=2026-01-15T00%3A00%3A00Z&callsign=BAW117",
+    );
+  });
+
+  it("rejects an unfiltered walk synchronously, before any request", () => {
+    expect(() => history().iterFlights({})).toThrow(SkyLinkError);
+    expect(() => history().iterFlights({ start: "2026-01-01T00:00:00Z" })).toThrow(
+      /at least one filter/,
+    );
+    expect(() => history().iterFlights({ limit: 5 })).toThrow(/history\.iterFlights\(\)/);
+    expect(requests).toHaveLength(0);
+  });
+
+  it("rejects an unusable range or window synchronously", () => {
+    const ns = history();
+    expect(() => ns.iterFlights({ callsign: "BAW117", start: "not-a-date" })).toThrow(
+      /not a parseable date/,
+    );
+    expect(() =>
+      ns.iterFlights({
+        callsign: "BAW117",
+        start: "2026-01-15T00:00:00Z",
+        end: "2026-01-01T00:00:00Z",
+      }),
+    ).toThrow(/start before end/);
+    expect(() => ns.iterFlights({ callsign: "BAW117" }, { windowDays: 0 })).toThrow(
+      /positive number/,
+    );
+    expect(() => ns.iterFlights({ callsign: "BAW117" }, { maxItems: 1.5 })).toThrow(
+      /non-negative integer/,
+    );
+    expect(requests).toHaveLength(0);
+  });
+
+  it("propagates an error from a later window", async () => {
+    mockJson({ path: ULTRA_FLIGHTS, body: flightsBody("f-1") });
+    mockError({ path: ULTRA_FLIGHTS, status: 500, body: { detail: "boom" } });
+
+    const seen: (string | undefined)[] = [];
+    await expect(async () => {
+      for await (const flight of history({ maxRetries: 0 }).iterFlights(
+        { callsign: "BAW117", start: "2026-01-01T00:00:00Z", end: "2026-01-15T00:00:00Z" },
+        { windowDays: 7 },
+      )) {
+        seen.push(flight.flight_id);
+      }
+    }).rejects.toBeInstanceOf(SkyLinkError);
+
+    expect(seen).toEqual(["f-1"]);
+  });
+
+  it("forwards per-call request options to every window", async () => {
+    mockJson({ path: ULTRA_FLIGHTS, body: flightsBody("f-1") });
+    mockJson({ path: ULTRA_FLIGHTS, body: flightsBody("f-2") });
+
+    await collect(
+      history().iterFlights(
+        { callsign: "BAW117", start: "2026-01-01T00:00:00Z", end: "2026-01-15T00:00:00Z" },
+        { windowDays: 7, headers: { "X-Trace": "iter" } },
+      ),
+    );
+
+    expect(requests).toHaveLength(2);
+    for (const request of requests) expect(request.headers["x-trace"]).toBe("iter");
+  });
+});
+
 describe("history namespace behaviour", () => {
   it("exposes every method", () => {
     const ns = history();
     expect(typeof ns.flights).toBe("function");
+    expect(typeof ns.iterFlights).toBe("function");
     expect(typeof ns.flight).toBe("function");
     expect(typeof ns.track).toBe("function");
     expect(typeof ns.positions).toBe("function");

@@ -5,6 +5,10 @@
  * so this module compiles away entirely. Field names mirror the wire exactly
  * (snake_case, `PascalCase` on schedule rows, `usageType` on navaids).
  *
+ * `compose.ts` additionally defines the three brief part lists as runtime
+ * constants; being values, they are re-exported from the package root rather than
+ * from this type-only barrel.
+ *
  * Names are unique across namespaces — no aliasing is needed. Two types are
  * re-exported from `core/types.js` by their owning namespace: `BBox` (via
  * `common.ts`) and `HistoryPlan` (via `history.ts`).
@@ -18,6 +22,7 @@ export type * from "./briefing.js";
 export type * from "./carbon.js";
 export type * from "./charts.js";
 export type * from "./common.js";
+export type * from "./compose.js";
 export type * from "./delays.js";
 export type * from "./distance.js";
 export type * from "./flight-status.js";
@@ -26,6 +31,7 @@ export type * from "./history.js";
 export type * from "./ml.js";
 export type * from "./navaids.js";
 export type * from "./notams.js";
+export type * from "./poll.js";
 export type * from "./routes.js";
 export type * from "./schedules.js";
 export type * from "./tickets.js";

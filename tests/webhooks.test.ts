@@ -28,7 +28,12 @@ const WEBHOOK_ID = "0a4f9c2e-7b31-4d85-9f60-31c8a2b7e410";
 
 function webhooks(options: ClientOptions = {}): Webhooks {
   return new Webhooks(
-    new SkyLink({ apiKey: "test-key", sleep: async () => undefined, ...options }),
+    new SkyLink({
+      apiKey: "test-key",
+      provider: "direct",
+      sleep: async () => undefined,
+      ...options,
+    }),
   );
 }
 
@@ -223,6 +228,165 @@ describe("webhooks.eventTypes", () => {
   });
 });
 
+describe("webhooks.ensure", () => {
+  const HOOK_URL = "https://hooks.example.com/skylink";
+  const BACKUP_ID = "b7d1e0f3-5a68-4c19-83b2-6d90f4c1a552";
+
+  it("writes nothing when a subscription already matches", async () => {
+    mockJson({ path: `${DIRECT_PREFIX}/webhooks`, body: listFixture });
+
+    const hook = await webhooks().ensure(HOOK_URL, ["status_changed", "flight_delayed"], {
+      filters: { flight_number: "BA117" },
+    });
+
+    expect(hook.id).toBe(WEBHOOK_ID);
+    // One GET and nothing else: no POST, no PATCH, no DELETE.
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.method).toBe("GET");
+  });
+
+  it("ignores event order and filter casing when deciding it matches", async () => {
+    mockJson({ path: `${DIRECT_PREFIX}/webhooks`, body: listFixture });
+
+    await webhooks().ensure(HOOK_URL, ["flight_delayed", "status_changed"], {
+      filters: { flight_number: " ba117 " },
+    });
+
+    expect(requests).toHaveLength(1);
+  });
+
+  it("creates the subscription when no url matches", async () => {
+    mockJson({ path: `${DIRECT_PREFIX}/webhooks`, body: listFixture });
+    mockJson({
+      method: "POST",
+      path: `${DIRECT_PREFIX}/webhooks`,
+      status: 201,
+      body: { ...createdFixture, url: "https://hooks.example.com/new" },
+    });
+
+    const hook = await webhooks().ensure("https://hooks.example.com/new", ["flight_landed"], {
+      filters: { flight_number: "LH400" },
+    });
+
+    expect(hook.url).toBe("https://hooks.example.com/new");
+    expect(requests.map((r) => r.method)).toEqual(["GET", "POST"]);
+    expect(JSON.parse(requests[1]?.body ?? "null")).toEqual({
+      url: "https://hooks.example.com/new",
+      event_types: ["flight_landed"],
+      filters: { flight_number: "LH400" },
+    });
+  });
+
+  it("patches only `active` when that is the single difference", async () => {
+    mockJson({ path: `${DIRECT_PREFIX}/webhooks`, body: listFixture });
+    mockJson({
+      method: "PATCH",
+      path: `${DIRECT_PREFIX}/webhooks/${BACKUP_ID}`,
+      body: { id: BACKUP_ID, active: true },
+    });
+
+    // The backup hook in the fixture is disabled with the same single event type.
+    const hook = await webhooks().ensure("https://hooks.example.com/skylink-backup", [
+      "gate_changed",
+    ]);
+
+    expect(hook.id).toBe(BACKUP_ID);
+    expect(hook.active).toBe(true);
+    expect(requests.map((r) => r.method)).toEqual(["GET", "PATCH"]);
+    expect(JSON.parse(requests[1]?.body ?? "null")).toEqual({ active: true });
+  });
+
+  it("re-creates the subscription when the event types differ, since PATCH cannot", async () => {
+    mockJson({ path: `${DIRECT_PREFIX}/webhooks`, body: listFixture });
+    mockEmpty({ method: "DELETE", path: `${DIRECT_PREFIX}/webhooks/${WEBHOOK_ID}`, status: 204 });
+    mockJson({
+      method: "POST",
+      path: `${DIRECT_PREFIX}/webhooks`,
+      status: 201,
+      body: { ...createdFixture, event_types: ["gate_changed"] },
+    });
+
+    const hook = await webhooks().ensure(HOOK_URL, ["gate_changed"], {
+      filters: { flight_number: "BA117" },
+    });
+
+    expect(hook.event_types).toEqual(["gate_changed"]);
+    expect(requests.map((r) => r.method)).toEqual(["GET", "DELETE", "POST"]);
+    expect(requests[1]?.fullPath).toBe(`/v3.1/webhooks/${WEBHOOK_ID}`);
+  });
+
+  it("re-creates when only the filter differs", async () => {
+    mockJson({ path: `${DIRECT_PREFIX}/webhooks`, body: listFixture });
+    mockEmpty({ method: "DELETE", path: `${DIRECT_PREFIX}/webhooks/${WEBHOOK_ID}`, status: 204 });
+    mockJson({
+      method: "POST",
+      path: `${DIRECT_PREFIX}/webhooks`,
+      status: 201,
+      body: { ...createdFixture, filters: { flight_number: "AF66" } },
+    });
+
+    await webhooks().ensure(HOOK_URL, ["status_changed", "flight_delayed"], {
+      filters: { flight_number: "AF66" },
+    });
+
+    expect(requests.map((r) => r.method)).toEqual(["GET", "DELETE", "POST"]);
+  });
+
+  it("disables a freshly created subscription when active: false was asked for", async () => {
+    mockJson({ path: `${DIRECT_PREFIX}/webhooks`, body: { count: 0, webhooks: [] } });
+    mockJson({
+      method: "POST",
+      path: `${DIRECT_PREFIX}/webhooks`,
+      status: 201,
+      body: createdFixture,
+    });
+    mockJson({
+      method: "PATCH",
+      path: `${DIRECT_PREFIX}/webhooks/${WEBHOOK_ID}`,
+      body: { id: WEBHOOK_ID, active: false },
+    });
+
+    const hook = await webhooks().ensure(HOOK_URL, ["status_changed", "flight_delayed"], {
+      active: false,
+      filters: { flight_number: "BA117" },
+    });
+
+    expect(hook.active).toBe(false);
+    expect(requests.map((r) => r.method)).toEqual(["GET", "POST", "PATCH"]);
+  });
+
+  it("matches the url verbatim — a trailing slash is a different subscription", async () => {
+    mockJson({ path: `${DIRECT_PREFIX}/webhooks`, body: listFixture });
+    mockJson({
+      method: "POST",
+      path: `${DIRECT_PREFIX}/webhooks`,
+      status: 201,
+      body: { ...createdFixture, url: `${HOOK_URL}/` },
+    });
+
+    await webhooks().ensure(`${HOOK_URL}/`, ["status_changed", "flight_delayed"], {
+      filters: { flight_number: "BA117" },
+    });
+
+    expect(requests.map((r) => r.method)).toEqual(["GET", "POST"]);
+  });
+
+  it("forwards per-call request options to every request it makes", async () => {
+    mockJson({ path: `${DIRECT_PREFIX}/webhooks`, body: listFixture });
+    mockJson({
+      method: "PATCH",
+      path: `${DIRECT_PREFIX}/webhooks/${BACKUP_ID}`,
+      body: { id: BACKUP_ID, active: true },
+    });
+
+    await webhooks().ensure("https://hooks.example.com/skylink-backup", ["gate_changed"], {
+      headers: { "X-Trace": "ensure" },
+    });
+
+    for (const request of requests) expect(request.headers["x-trace"]).toBe("ensure");
+  });
+});
+
 describe("webhooks namespace behaviour", () => {
   it("exposes the full CRUD surface", () => {
     const ns = webhooks();
@@ -231,6 +395,7 @@ describe("webhooks namespace behaviour", () => {
     expect(typeof ns.update).toBe("function");
     expect(typeof ns.delete).toBe("function");
     expect(typeof ns.eventTypes).toBe("function");
+    expect(typeof ns.ensure).toBe("function");
   });
 
   it("routes through the RapidAPI channel without the version prefix", async () => {

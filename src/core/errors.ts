@@ -126,7 +126,7 @@ export class UnprocessableEntityError extends APIStatusError {
 
 /** 429 — quota exhausted. Carries the parsed quota headers and the `Retry-After` hint. */
 export class RateLimitError extends APIStatusError {
-  /** Quota snapshot parsed from the `X-RateLimit-Requests-*` headers, when present. */
+  /** Quota snapshot parsed from the channel's `X-RateLimit-*` headers, when present. */
   readonly rateLimit: RateLimitInfo | null;
   /** Milliseconds to wait before retrying, derived from `Retry-After` (capped at 60s). */
   readonly retryAfter: number | null;

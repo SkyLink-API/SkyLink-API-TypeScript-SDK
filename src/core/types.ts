@@ -57,6 +57,14 @@ export interface RequestSpec {
   body?: unknown;
   /** How to decode the success response. Defaults to `"json"`. */
   responseKind?: ResponseKind;
+  /**
+   * Dotted operation name (`"weather.metar"`) used to look up this call's cache TTL.
+   *
+   * Optional: when omitted it is derived from {@link path}, which is what every
+   * built-in resource relies on. Set it when calling {@link RequestSpec} directly
+   * through `client.request()` and you want the call to match a configured TTL.
+   */
+  operation?: string;
 }
 
 /** Per-call overrides accepted by every SDK method. */

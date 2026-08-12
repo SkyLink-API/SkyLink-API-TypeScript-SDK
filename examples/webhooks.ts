@@ -18,7 +18,8 @@ import {
   UnprocessableEntityError,
 } from "../src/index.js";
 
-const sky = new SkyLink({ apiKey: process.env.SKYLINK_API_KEY });
+// No provider given → the default RapidAPI channel, keyed by RAPIDAPI_KEY.
+const sky = new SkyLink();
 
 const TARGET_URL = process.env.WEBHOOK_URL ?? "https://hooks.example.com/skylink";
 
@@ -100,4 +101,4 @@ main().catch((error: unknown) => {
   process.exit(1);
 });
 
-// --- Run: SKYLINK_API_KEY=... WEBHOOK_URL=https://... npx tsx examples/webhooks.ts ---
+// --- Run: RAPIDAPI_KEY=... WEBHOOK_URL=https://... npx tsx examples/webhooks.ts ---
