@@ -116,7 +116,7 @@
   },
   "scripts": {
     "build": "tsup",
-    "test": "vitest run --exclude tests/integration/**",
+    "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "typecheck": "tsc --noEmit",
