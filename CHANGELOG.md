@@ -134,8 +134,8 @@ First public release. Covers the SkyLink API v3.1 surface.
 **Packaging**
 
 - Dual ESM + CJS build with declaration files for both, `exports` map, `sideEffects:
-  false`, Node >= 18.
-- CI on Node 18/20/22 (Biome, `tsc --noEmit`, build, vitest) and tag-triggered
+  false`, Node >= 20.
+- CI on Node 20/22/24 (Biome, `tsc --noEmit`, build, vitest) and tag-triggered
   publishing with npm provenance.
 - Ten runnable examples in `examples/` — weather, ADS-B, briefings, history, webhooks,
   batch, compose, polling, helper exports, cache and quota — and an env-gated

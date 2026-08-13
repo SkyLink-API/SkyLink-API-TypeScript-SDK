@@ -21,7 +21,7 @@ export default defineConfig({
   dts: true,
   sourcemap: true,
   clean: true,
-  target: "node18",
+  target: "node20",
   treeshake: true,
   outExtension({ format }) {
     return { js: format === "cjs" ? ".cjs" : ".js" };

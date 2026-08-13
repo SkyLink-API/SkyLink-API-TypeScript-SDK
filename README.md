@@ -10,7 +10,7 @@ ADS-B tracking, aviation weather, airports and navaids, aerodrome charts, NOTAMs
 delays, flight status, schedules, preflight briefings, historical flights and more.
 
 **Zero runtime dependencies.** Native `fetch` and `AbortController` only, so it runs
-unchanged on Node 18+, Bun, Deno, Cloudflare Workers and Vercel Edge. Every endpoint is
+unchanged on Node 20+, Bun, Deno, Cloudflare Workers and Vercel Edge. Every endpoint is
 typed, retries and quota tracking are built in, and both ESM and CJS builds ship with
 declaration files.
 
@@ -24,7 +24,7 @@ npm install skylink-api
 pnpm add skylink-api      # or: yarn add skylink-api / bun add skylink-api
 ```
 
-Requires Node.js 18 or newer (any runtime with a global `fetch`).
+Requires Node.js 20 or newer (any runtime with a global `fetch`).
 
 ## Quickstart
 

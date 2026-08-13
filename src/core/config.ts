@@ -66,7 +66,7 @@ export interface ClientOptions {
   historyPlan?: HistoryPlan;
   /** Extra headers merged into every request. */
   defaultHeaders?: Headers;
-  /** Custom `fetch` implementation. Defaults to the global `fetch` (Node >= 18). */
+  /** Custom `fetch` implementation. Defaults to the global `fetch` (Node >= 20). */
   fetch?: FetchLike;
   /**
    * Response cache. **Off by default**, and off for every operation the store gives
