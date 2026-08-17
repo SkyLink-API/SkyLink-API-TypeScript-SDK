@@ -142,10 +142,10 @@
   "homepage": "https://skylinkapi.com",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/skylinkapi/TypeScript-SDK.git"
+    "url": "git+https://github.com/SkyLink-API/SkyLink-API-TypeScript-SDK.git"
   },
   "bugs": {
-    "url": "https://github.com/skylinkapi/TypeScript-SDK/issues"
+    "url": "https://github.com/SkyLink-API/SkyLink-API-TypeScript-SDK/issues"
   },
   "publishConfig": {
     "access": "public",

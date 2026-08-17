@@ -1,6 +1,6 @@
 # SkyLink API — TypeScript SDK
 
-[![CI](https://github.com/skylinkapi/TypeScript-SDK/actions/workflows/ci.yml/badge.svg)](https://github.com/skylinkapi/TypeScript-SDK/actions/workflows/ci.yml)
+[![CI](https://github.com/SkyLink-API/SkyLink-API-TypeScript-SDK/actions/workflows/ci.yml/badge.svg)](https://github.com/SkyLink-API/SkyLink-API-TypeScript-SDK/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/skylink-api.svg)](https://www.npmjs.com/package/skylink-api)
 [![types](https://img.shields.io/npm/types/skylink-api.svg)](https://www.npmjs.com/package/skylink-api)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -774,7 +774,7 @@ afterwards, pass or fail.
 
 Publishing is automated: pushing a `v*` tag builds the package and runs
 `npm publish --provenance --access public` via OIDC. The npm trusted publisher must be
-configured for `skylinkapi/TypeScript-SDK` beforehand.
+configured for `SkyLink-API/SkyLink-API-TypeScript-SDK` beforehand.
 
 ## License
 
