@@ -219,7 +219,7 @@ string. Flight rows use **PascalCase** keys — see [Gotchas](#gotchas).
 
 | Method | Endpoint |
 | --- | --- |
-| `flightTime(params: { from, to, aircraft? }, options?): Promise<FlightTimePrediction>` | `GET /ml/flight-time?from&to&aircraft` |
+| `flightTime(params: { origin, destination, aircraft? }, options?): Promise<FlightTimePrediction>` | `GET /ml/flight-time?from&to&aircraft` |
 
 The properties really are `from` and `to`, matching the wire names.
 
@@ -239,6 +239,20 @@ Supply either `callsign` or both airports; the SDK throws `SkyLinkError` otherwi
 | `flight(params: BriefingParams & { format: "markdown" \| "plain_text" \| "html" }, options?): Promise<string>` | `GET /briefing/flight?...&format` |
 | `pdf(params: { departure_icao, arrival_icao, flight_number? }, options?): Promise<Uint8Array>` | `GET /briefing/pdf?departure_icao&arrival_icao&flight_number` |
 
+> **These are the slowest calls in the SDK.** A briefing is composed by a language model
+> over both airports' weather and NOTAMs: measured live on 2026-08-15, `flight()` took
+> 30–85 s and `pdf()` about 50 s. Both therefore run with their own 180 s deadline
+> (`BRIEFING_TIMEOUT_MS`) instead of the client-wide 30 s — under that default a healthy
+> request aborts, gets retried three times, and fails after two minutes. It is a default,
+> not a ceiling; pass `{ timeout }` when a slow page is worse than no briefing.
+>
+> ```ts
+> await sky.briefing.flight(
+>   { origin: "KJFK", destination: "KLAX" },
+>   { timeout: 60_000, maxRetries: 0 },
+> );
+> ```
+
 ### `sky.routes` — route lookup
 
 | Method | Endpoint |
@@ -256,6 +270,11 @@ Supply either `callsign` or both airports; the SDK throws `SkyLinkError` otherwi
 | `search(params: TicketSearchParams, options?): Promise<TicketSearchResponse>` | `GET /tickets/search?origin&destination&date&passengers` |
 
 `date` accepts a `Date` or a `YYYY-MM-DD` string.
+
+Offers are cheapest first and there is **no small cap** — a busy city pair returns 100+, so
+slice before rendering. `price_usd` is the converted total; `original_price` and
+`original_currency` carry the upstream quote (e.g. `137 CHF` behind `168.52`) and are how you
+spot the case where conversion failed and `price_usd` is silently *not* USD.
 
 ### `sky.webhooks` — push subscriptions
 
@@ -362,18 +381,21 @@ for (const [part, error] of Object.entries(brief.errors)) {
 | `routeBrief(origin, destination, { aircraftType?, passengers? })` | distance, block time, both ends' weather, CO₂ |
 | `enrichAdsb(states, { maxLookups?, concurrency?, photos? })` | live ADS-B rows × the airframe registry, one lookup per distinct `icao24` |
 | `schedulesWithStatus(code, { direction?, limit?, concurrency? })` | a board × the live status of each flight number on it |
-| `northAmericaCountries()` | the 41 countries `geo.countries({ continent: "NA" })` cannot return |
+| `northAmericaCountries()` | the 41 NA countries, tolerant of every spelling the API has used |
 
 `include`/`exclude` decide what is **requested**, so a part you do not want costs no
 quota; the names are the result's own field names (`AIRPORT_BRIEF_PARTS`,
 `FLIGHT_BRIEF_PARTS`, `ROUTE_BRIEF_PARTS`). Weather in the briefs is fetched decoded
 (`parsed: true`), so `brief.metar.parsed` is there for `flightCategory()`.
 
-`northAmericaCountries()` is a **workaround for a backend bug**: the reference CSV is read
-with pandas, which parses the literal `NA` as not-a-number, so every North-American row
-arrives with `continent: null` and the server-side filter matches nothing. This fetches the
-full list once and filters client-side — including rows already spelled `"NA"`, so it keeps
-working on the day the backend is fixed.
+`northAmericaCountries()` was written as a workaround: the reference CSV was read with
+pandas, which parses the literal `NA` as not-a-number, so every North-American row arrived
+with `continent: null` and the server-side filter matched nothing. **That is fixed** — as of
+2026-08-15 `geo.countries({ continent: "NA" })` returns the 41 countries (and
+`geo.regions({ continent: "NA" })` 440 regions) directly, and that is the call to prefer.
+The method stays because it is public API and because it accepts the old `null`/`""`
+spellings as well as `"NA"`, so it answers correctly against an older deployment; the price
+is a full ~250-row download.
 
 ### Iterators and pollers
 
@@ -641,7 +663,9 @@ Retried: **429, 500, 502, 503, 504** and transport-level failures. Never retried
 
 Timeouts are an overall deadline **per attempt**, enforced with `AbortController`; the
 default is 30 000 ms. Exceeding it throws `APITimeoutError` (a subclass of
-`APIConnectionError`, so it is retryable on idempotent methods).
+`APIConnectionError`, so it is retryable on idempotent methods). `/briefing/*` overrides
+that default with 180 000 ms of its own, because a healthy briefing takes longer than
+30 s — see [`sky.briefing`](#skybriefing--preflight-briefings).
 
 Both can be overridden per request, and an external `AbortSignal` cancels immediately
 without retrying:
@@ -668,8 +692,12 @@ Real-world quirks of the API that the SDK surfaces rather than hides.
   delay durations are scraped text. They are typed `string` and are **not** parsed — do not
   feed them to `new Date()`. Fields documented as ISO 8601 (`timestamp`, `last_seen`,
   `created_at`, history times) are safe to parse.
-- **`ml.flightTime` uses `from` / `to`.** Those are the wire parameter names, and they are
-  valid TypeScript property names, so no renaming happens: `sky.ml.flightTime({ from: "KJFK", to: "EGLL" })`.
+- **`ml.flightTime` takes `origin` / `destination`.** The endpoint's own query keys are
+  `from` / `to`, and the method maps onto them — but every other route entry point in both
+  SDKs says origin/destination (`compose.routeBrief(origin, destination)`, Python's
+  `ml.flight_time(origin=, destination=)`), so this one spelling it differently was a
+  divergence rather than fidelity. `{ from, to }` still compiles and still works; it is
+  deprecated.
 - **`ultra` vs `mega`.** The history plans expose identical routes and response shapes; they
   differ only in retention window and limit caps. The prefix is resolved per call —
   `params.plan` wins, then the client's `historyPlan`, then `"ultra"`. A plan your key does

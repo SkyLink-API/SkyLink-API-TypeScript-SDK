@@ -12,10 +12,11 @@ import { SkyLink } from "../src/client.js";
 import type { ClientOptions } from "../src/core/config.js";
 import { APIConnectionError, NotFoundError, SkyLinkError } from "../src/core/errors.js";
 import { isBatchError } from "../src/helpers/batch.js";
+import { flightCategory } from "../src/helpers/weather.js";
 import type { EnrichedAirport } from "../src/models/airports.js";
 import type { FlightStatusResponse } from "../src/models/flight-status.js";
 import type { NotamsResponse } from "../src/models/notams.js";
-import type { MetarResponse } from "../src/models/weather.js";
+import type { MetarResponse, ParsedMetarResponse } from "../src/models/weather.js";
 import { loadFixture } from "./helpers/fixtures.js";
 import {
   DIRECT_PREFIX,
@@ -27,6 +28,7 @@ import {
 } from "./helpers/mock.js";
 
 const metarFixture = loadFixture<MetarResponse>("weather_metar");
+const parsedMetarFixture = loadFixture<ParsedMetarResponse>("weather_metar_parsed");
 const notamsFixture = loadFixture<NotamsResponse>("notams");
 const airportFixture = loadFixture<EnrichedAirport>("airports_search");
 const flightFixture = loadFixture<FlightStatusResponse>("flight_status");
@@ -123,6 +125,31 @@ describe("batch.metars", () => {
       "/v3.1/weather/metar/EGLL",
     ]);
     for (const request of requests) expect(request.headers["x-trace"]).toBe("batch");
+  });
+
+  it("does not ask for the decoded block by default", async () => {
+    mockJson({ path: `${DIRECT_PREFIX}/weather/metar/KJFK`, body: metarBody("KJFK") });
+
+    await client().batch.metars(["KJFK"]);
+
+    expect(requests[0]?.query.has("parsed")).toBe(false);
+  });
+
+  it("asks for the decoded block with parsed: true, which is what the helpers need", async () => {
+    // Without `parsed`, `flightCategory` can only answer null: the derived-weather
+    // helpers read decoded fields and never re-parse the raw report.
+    mockJson({
+      path: `${DIRECT_PREFIX}/weather/metar/KJFK?parsed=true`,
+      body: parsedMetarFixture,
+    });
+
+    const results = await client().batch.metars(["KJFK"], { parsed: true });
+
+    expect(requests[0]?.query.get("parsed")).toBe("true");
+    const report = results.KJFK;
+    expect(isBatchError(report)).toBe(false);
+    expect((report as ParsedMetarResponse).parsed).not.toBeNull();
+    expect(flightCategory(report as ParsedMetarResponse)).not.toBeNull();
   });
 
   it("rejects an unusable concurrency before issuing any request", async () => {

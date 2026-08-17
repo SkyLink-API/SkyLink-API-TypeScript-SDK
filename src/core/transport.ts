@@ -274,7 +274,9 @@ export async function execute<T>(
     }
   }
 
-  const timeout = options.timeout ?? config.timeout;
+  // Precedence: the caller's per-call timeout, then the endpoint's own default
+  // (`/briefing/*` only), then the client-wide one.
+  const timeout = options.timeout ?? spec.timeout ?? config.timeout;
   const maxRetries = options.maxRetries ?? config.maxRetries;
   const hasBody = spec.body !== undefined && spec.body !== null;
 

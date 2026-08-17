@@ -10,19 +10,42 @@
 /**
  * Parameters of `ml.flightTime()`.
  *
- * `from` and `to` are the literal query-parameter names of the endpoint. They are
- * reserved words in some languages but perfectly valid property names in
- * TypeScript, so — following the "fields exactly as they appear on the wire" rule —
- * they are kept as-is rather than renamed to origin/destination.
+ * The endpoint's own query keys are `from` and `to`; this SDK names them
+ * `origin`/`destination`. The "fields exactly as they appear on the wire" rule
+ * governs **response** fields — for a route, every other entry point in both SDKs
+ * already says origin/destination (`compose.routeBrief(origin, destination)`,
+ * Python's `ml.flight_time(origin=, destination=)`), and one endpoint spelling it
+ * differently is a divergence, not fidelity. The wire names are still accepted:
+ * see {@link FlightTimeParamsLegacy}.
  */
 export interface FlightTimeParams {
   /** Origin airport, ICAO or IATA code, e.g. `"KJFK"` or `"JFK"`. */
-  from: string;
+  origin: string;
   /** Destination airport, ICAO or IATA code, e.g. `"EGLL"` or `"LHR"`. */
+  destination: string;
+  /** Aircraft type code, e.g. `"B738"`, `"A320"`, `"C172"`. Max 4 characters. */
+  aircraft?: string;
+}
+
+/**
+ * The pre-0.2 spelling of {@link FlightTimeParams}, kept so existing callers
+ * compile unchanged.
+ *
+ * @deprecated Use `origin`/`destination`. `from`/`to` are the endpoint's query
+ * keys, not this SDK's vocabulary, and they disagree with every other route
+ * method.
+ */
+export interface FlightTimeParamsLegacy {
+  /** @deprecated Renamed to `origin`. */
+  from: string;
+  /** @deprecated Renamed to `destination`. */
   to: string;
   /** Aircraft type code, e.g. `"B738"`, `"A320"`, `"C172"`. Max 4 characters. */
   aircraft?: string;
 }
+
+/** What `ml.flightTime()` accepts: the current names, or the deprecated ones. */
+export type FlightTimeParamsInput = FlightTimeParams | FlightTimeParamsLegacy;
 
 /**
  * Response of `ml.flightTime()`.

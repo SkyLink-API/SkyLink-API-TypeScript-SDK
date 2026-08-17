@@ -71,15 +71,17 @@ export interface TicketOffer {
   /**
    * Price as quoted upstream, before FX conversion.
    *
-   * Documented by the endpoint but not emitted by every deployment — treat as
-   * possibly absent.
+   * Was documented by the endpoint but never emitted; the ticket service sends it
+   * since the 2026-08 release, verified live on 2026-08-15 (`JFK→LAX`:
+   * `price_usd: 168.52`, `original_price: 137`, `original_currency: "CHF"`). Still
+   * optional — an offer already quoted in USD has nothing to convert.
    */
   original_price?: number | null;
   /**
-   * ISO 4217 code of `original_price`, e.g. `"EUR"`.
+   * ISO 4217 code of `original_price`, e.g. `"CHF"`.
    *
-   * Documented by the endpoint but not emitted by every deployment — treat as
-   * possibly absent.
+   * Together with `original_price` this is how a genuinely converted price is told
+   * apart from the silent passthrough described on `price_usd`.
    */
   original_currency?: string | null;
   /** Door-to-door duration in minutes, layovers included. */
@@ -100,7 +102,12 @@ export interface TicketSearchResponse {
   /** Travel date as `YYYY-MM-DD`. Echoes the default (today + 7 days) when none was sent. */
   date: string;
   passengers: number;
-  /** Number of offers in `flights`. */
+  /**
+   * Number of offers in `flights`.
+   *
+   * Not a small number: `JFK→LAX` returned 111 offers on 2026-08-15 and `LHR→JFK`
+   * 120. Slice before rendering rather than assuming the list is short.
+   */
   count: number;
   flights: TicketOffer[];
 }

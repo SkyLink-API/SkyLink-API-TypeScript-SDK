@@ -33,6 +33,21 @@ export const DEFAULT_PROVIDER: Provider = "rapidapi";
 /** Overall request deadline in milliseconds. */
 export const DEFAULT_TIMEOUT_MS = 30_000;
 
+/**
+ * Request deadline for `/briefing/*`, the one family {@link DEFAULT_TIMEOUT_MS} is wrong for.
+ *
+ * Briefings are composed by a language model over METAR, TAF, NOTAMs and (optionally)
+ * PIREPs for both airports. Measured against the live API on 2026-08-15: `format: "json"`
+ * took 37-58 s, `"markdown"` 30-50 s, `"plain_text"` up to 85 s, and `briefing.pdf()`
+ * about 50 s. Under the 30 s default every one of those is an `APITimeoutError` — and
+ * because a timeout is retried, the caller waits ~120 s to be told a working endpoint
+ * failed.
+ *
+ * Applied as the *spec* default (`RequestSpec.timeout`), so a per-call
+ * `{ timeout }` in `RequestOptions` still overrides it.
+ */
+export const BRIEFING_TIMEOUT_MS = 180_000;
+
 /** Default number of retries after the initial attempt. */
 export const DEFAULT_MAX_RETRIES = 3;
 

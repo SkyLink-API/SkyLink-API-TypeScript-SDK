@@ -483,9 +483,12 @@ describe.skipIf(!ARMED)("live SkyLink DX features", () => {
 
   // ── compose.northAmericaCountries ──────────────────────────────────────────
 
-  it("compose.northAmericaCountries works around the pandas NA-as-NaN bug", async (ctx) => {
+  it("compose.northAmericaCountries agrees with the server-side continent filter", async (ctx) => {
     const countries = await live(ctx, "compose.northAmericaCountries", () =>
       sky.compose.northAmericaCountries(),
+    );
+    const filtered = await live(ctx, "geo.countries({continent:'NA'})", () =>
+      sky.geo.countries({ continent: "NA" }),
     );
 
     report("compose.northAmericaCountries", [
@@ -497,6 +500,7 @@ describe.skipIf(!ARMED)("live SkyLink DX features", () => {
       `continent values seen: ${[
         ...new Set(countries.map((country) => JSON.stringify(country.continent))),
       ].join(", ")}`,
+      `geo.countries({continent:"NA"}) returns total=${filtered.total} — the pandas NA-as-NaN defect is fixed`,
     ]);
 
     // 41 rows on the dataset the API ships today; the band leaves room for a refresh
@@ -511,6 +515,14 @@ describe.skipIf(!ARMED)("live SkyLink DX features", () => {
       const blank = continent === null || continent === undefined || continent.trim() === "";
       expect(blank || continent?.toUpperCase() === "NA").toBe(true);
     }
+
+    // The interesting assertion since the backend was fixed: both routes to North
+    // America must agree. A regression to zero rows fails here, while the compose
+    // method — which still accepts the historical null/"" spellings — keeps answering.
+    expect(filtered.total).toBe(filtered.countries.length);
+    expect(new Set(filtered.countries.map((country) => country.code))).toEqual(
+      new Set(countries.map((country) => country.code)),
+    );
   });
 
   // ── adsb.iterAircraft ──────────────────────────────────────────────────────

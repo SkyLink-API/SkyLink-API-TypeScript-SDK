@@ -65,6 +65,15 @@ export interface RequestSpec {
    * through `client.request()` and you want the call to match a configured TTL.
    */
   operation?: string;
+  /**
+   * Endpoint-specific timeout **default** in milliseconds, for the handful of routes
+   * the client-wide default is wrong for.
+   *
+   * It loses to an explicit `RequestOptions.timeout`, so a caller can always override
+   * it; it only replaces the client's `timeout` when the caller said nothing. Only
+   * `/briefing/*` sets it — see `BRIEFING_TIMEOUT_MS`.
+   */
+  timeout?: number;
 }
 
 /** Per-call overrides accepted by every SDK method. */

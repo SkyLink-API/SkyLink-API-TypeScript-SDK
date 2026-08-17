@@ -6,6 +6,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`briefing.flight()` and `briefing.pdf()` timed out on every call with the default
+  client.** A briefing is composed by a language model over both airports' weather and
+  NOTAMs and takes far longer than the 30 000 ms `DEFAULT_TIMEOUT_MS`: measured live on
+  2026-08-15, `format: "json"` took 37–128 s, `"markdown"` 30–50 s, `"plain_text"` up to
+  85 s and the PDF ~52 s. Every one of those aborted, and because a timeout is retried the
+  caller waited ~120 s to be told a healthy endpoint had failed. Both routes now carry the
+  new `BRIEFING_TIMEOUT_MS` (180 000 ms) on the request spec itself.
+
+  This is the first use of the new `RequestSpec.timeout` field, an endpoint-level
+  *default*: a per-call `{ timeout }` still wins, and every other endpoint keeps the
+  client's timeout untouched. Retries are deliberately left on — a real 503 should still be
+  retried — so cap both yourself where a slow page is worse than no briefing:
+
+  ```ts
+  await sky.briefing.flight(
+    { origin: "KJFK", destination: "KLAX" },
+    { timeout: 60_000, maxRetries: 0 },
+  );
+  ```
+
+  Matches the same fix in the Python SDK.
+
+### Changed
+
+Documentation catching up with backend fixes shipped in the 2026-08 API release. No
+behaviour changes — every one of these endpoints already worked through the SDK once the
+server side was corrected; what was wrong was the SDK telling users they were broken.
+
+- `CONTINENTS` / `geo.countries({ continent: "NA" })` no longer carry the "accepted and
+  then matches nothing" warning. The backend used to read its reference CSV with pandas,
+  which parses the literal `NA` as not-a-number, so North America was unqueryable. Verified
+  live on 2026-08-15: 41 countries and 440 regions.
+- `compose.northAmericaCountries()` is documented as a convenience rather than a
+  workaround, and its `@todo` (which also wrongly predicted the method would start
+  returning nothing) is gone. The method is kept — it is public API, and its predicate
+  still accepts the historical `null`/`""` spellings alongside `"NA"`.
+  `geo.countries({ continent: "NA" })` is now the cheaper route and is documented as such.
+- `TicketOffer.original_price` / `.original_currency` are no longer documented as absent.
+  The ticket service emits them (`JFK→LAX`: `price_usd: 168.52`, `original_price: 137`,
+  `original_currency: "CHF"`), which finally makes the `price_usd`-is-not-always-USD caveat
+  actionable.
+- `TicketSearchResponse.count` now warns that the list is long rather than short:
+  `JFK→LAX` returned 111 offers and `LHR→JFK` 120.
+
+### Added
+
+- `batch.metars()` and `batch.tafs()` accept `parsed` through the new
+  `BatchWeatherOptions`, overloaded so `{ parsed: true }` narrows the result to
+  `BatchResult<ParsedMetarResponse>` / `BatchResult<ParsedTafResponse>`. Previously the
+  calls hard-coded an empty params object (`weather.metar(icao, {}, options)`), so asking
+  for the decoded block was impossible — and everything in `skylink-api/weather`
+  (`flightCategory`, `ceilingFt`, the unit parsers) reads decoded fields and could only
+  answer `null` on the result. Colouring a board of airports by flight category is the
+  main reason to batch METARs, and it could not be done. Matches the same fix in the
+  Python SDK.
+
+### Changed
+
+- `ml.flightTime()` takes `{ origin, destination }`. It previously exposed the endpoint's
+  own query keys `{ from, to }`, which disagreed with the Python SDK
+  (`ml.flight_time(origin=, destination=)`, where the rename is deliberate and documented)
+  and with this SDK's own `compose.routeBrief(origin, destination)` — which called
+  `flightTime({ from, to })` internally. Divergence between the two SDKs is a defect by
+  contract, so the names are now the same on both sides.
+
+### Deprecated
+
+- `{ from, to }` on `ml.flightTime()`. Still accepted and still works — the parameters are
+  a union of both spellings, `origin`/`destination` win when both are present — but the
+  type is marked `@deprecated`. Existing code compiles unchanged.
+
 ## [0.1.0] - Unreleased
 
 First public release. Covers the SkyLink API v3.1 surface.

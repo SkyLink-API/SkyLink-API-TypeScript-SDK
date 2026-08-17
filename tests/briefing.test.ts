@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SkyLink } from "../src/client.js";
 import type { ClientOptions } from "../src/core/config.js";
+import { BRIEFING_TIMEOUT_MS, DEFAULT_TIMEOUT_MS } from "../src/core/config.js";
 import { BadRequestError, UnprocessableEntityError } from "../src/core/errors.js";
+import type { FetchLike, RequestOptions, RequestSpec } from "../src/core/types.js";
 import type { FlightBriefing, FlightBriefingText } from "../src/models/briefing.js";
 import { Briefing } from "../src/resources/briefing.js";
 import { loadFixture } from "./helpers/fixtures.js";
@@ -169,6 +171,34 @@ describe("briefing.flight", () => {
         include_pireps: false,
       }),
     ).rejects.toBeInstanceOf(BadRequestError);
+  });
+});
+
+describe("briefing deadlines", () => {
+  // A briefing takes 30-85 s live; the 30 s client default would abort it, retry three
+  // times, and fail after two minutes. Both routes therefore pin their own timeout.
+  it("both routes ask for the long deadline rather than the client default", async () => {
+    const specs: RequestSpec[] = [];
+    const recordingFetch: FetchLike = async () =>
+      new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+
+    const sky = new SkyLink({ apiKey: "k", fetch: recordingFetch, sleep: async () => undefined });
+    const original = sky.request.bind(sky);
+    sky.request = (<T>(spec: RequestSpec, options?: RequestOptions): Promise<T> => {
+      specs.push(spec);
+      return original<T>(spec, options);
+    }) as typeof sky.request;
+
+    await sky.briefing.flight({ origin: "KJFK", destination: "EGLL" });
+    await sky.briefing.flight({ origin: "KJFK", destination: "EGLL", format: "markdown" });
+    await sky.briefing.pdf({ departure_icao: "KJFK", arrival_icao: "EGLL" });
+
+    expect(specs.map((spec) => spec.timeout)).toEqual([
+      BRIEFING_TIMEOUT_MS,
+      BRIEFING_TIMEOUT_MS,
+      BRIEFING_TIMEOUT_MS,
+    ]);
+    expect(BRIEFING_TIMEOUT_MS).toBeGreaterThan(DEFAULT_TIMEOUT_MS);
   });
 });
 

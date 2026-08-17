@@ -629,6 +629,31 @@ describe("SkyLink with an injected fetch", () => {
     expect(calls).toBe(1);
   });
 
+  /**
+   * A `fetch` that answers after `ms` — and honours the abort signal, the way a real
+   * one does. Without the listener the deadline can elapse without anything happening,
+   * so a timeout test would pass whatever the SDK did.
+   */
+  function slowFetch(ms: number, body: unknown): FetchLike {
+    return (_url, init) =>
+      new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          resolve(
+            new Response(JSON.stringify(body), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            }),
+          );
+        }, ms);
+        init?.signal?.addEventListener("abort", () => {
+          clearTimeout(timer);
+          const error = new Error("This operation was aborted");
+          error.name = "AbortError";
+          reject(error);
+        });
+      });
+  }
+
   it("raises APITimeoutError when the deadline elapses", async () => {
     const hangingFetch: FetchLike = (_url, init) =>
       new Promise((_resolve, reject) => {
@@ -649,6 +674,39 @@ describe("SkyLink with an injected fetch", () => {
     await expect(sky.request({ method: "GET", path: "/health" })).rejects.toBeInstanceOf(
       APITimeoutError,
     );
+  });
+
+  it("lets a spec's own timeout override the client default", async () => {
+    // `/briefing/*` takes 30-85 s live, so its spec pins 180 s. Proven here by giving
+    // the client a 20 ms deadline and answering after 60 ms: the call only survives if
+    // the spec's timeout replaced the client's.
+    const sky = new SkyLink({
+      apiKey: "k",
+      fetch: slowFetch(60, { origin: "KJFK", destination: "EGLL" }),
+      timeout: 20,
+      maxRetries: 0,
+      sleep: async () => undefined,
+    });
+
+    const briefing = await sky.briefing.flight({ origin: "KJFK", destination: "EGLL" });
+    expect(briefing.origin).toBe("KJFK");
+
+    // The same client, on a route without a spec timeout, still honours its 20 ms.
+    await expect(sky.weather.metar("KJFK")).rejects.toBeInstanceOf(APITimeoutError);
+  });
+
+  it("lets per-call options override a spec's timeout", async () => {
+    // The spec default is a default, not a ceiling.
+    const sky = new SkyLink({
+      apiKey: "k",
+      fetch: slowFetch(60, {}),
+      maxRetries: 0,
+      sleep: async () => undefined,
+    });
+
+    await expect(
+      sky.briefing.flight({ origin: "KJFK", destination: "EGLL" }, { timeout: 20 }),
+    ).rejects.toBeInstanceOf(APITimeoutError);
   });
 
   it("aborts immediately on an external signal and does not retry", async () => {
