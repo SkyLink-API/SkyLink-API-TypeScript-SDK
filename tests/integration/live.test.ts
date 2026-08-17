@@ -330,7 +330,7 @@ describe.skipIf(!ARMED)("live SkyLink API", () => {
 
   it("ml.flightTime maps from/to and brackets its estimate", async (ctx) => {
     const prediction = await live(ctx, "ml.flightTime", () =>
-      sky.ml.flightTime({ from: ORIGIN, to: DESTINATION }),
+      sky.ml.flightTime({ origin: ORIGIN, destination: DESTINATION }),
     );
 
     // A broken query builder would answer 422 here, so this doubles as a

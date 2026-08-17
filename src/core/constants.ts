@@ -52,11 +52,11 @@ export const WEBHOOK_EVENTS = [
  * validates against: `AF` Africa, `AN` Antarctica, `AS` Asia, `EU` Europe,
  * `NA` North America, `OC` Oceania, `SA` South America.
  *
- * **`"NA"` is accepted and then matches nothing.** The reference CSV is loaded with
- * pandas, which reads the literal `NA` as "not available", so every North-American
- * row arrives with `continent: null` and filtering by `"NA"` returns an empty list.
- * For North America, fetch the unfiltered list and keep the rows whose `continent` is
- * empty (a `compose.northAmericaCountries()` wrapper for exactly that is coming).
+ * `"NA"` used to be accepted and then match nothing: the reference CSV was loaded with
+ * pandas, which reads the literal `NA` as "not available", so every North-American row
+ * arrived with `continent: null` and filtering by `"NA"` returned an empty list. **That
+ * is fixed** — verified live on 2026-08-15, `geo.countries({ continent: "NA" })` returns
+ * 41 countries and `geo.regions({ continent: "NA" })` 440 regions.
  */
 export const CONTINENTS = [
   "AF",

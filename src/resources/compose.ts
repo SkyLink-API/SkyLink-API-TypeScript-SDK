@@ -358,12 +358,13 @@ function flightCarbonParams(
 }
 
 /**
- * A country row that belongs to North America — the workaround's predicate.
+ * Is this row North America? Tolerant of every spelling the API has used.
  *
- * Three spellings count: `null` (what the backend sends today, pandas having read the
- * literal `NA` as not-a-number), `""` (what a fixed loader would send), and `"NA"`
- * itself — so the day the backend is fixed this keeps returning the same 41 countries
- * instead of an empty list.
+ * Three count: `"NA"` (what the backend sends today, and the correct value), `null`
+ * (what it sent until the 2026-08 release, pandas having read the literal `NA` as
+ * not-a-number), and `""` (the other shape a fixed loader could produce). Keeping the
+ * two historical spellings costs nothing and means the method answers correctly
+ * against an older deployment instead of returning `[]`.
  */
 function isNorthAmerican(country: Country): boolean {
   const continent = country?.continent;
@@ -650,7 +651,7 @@ export class Compose extends APIResource {
       jobs.push(
         capture(errors, "flightTime", () =>
           this.client.ml.flightTime(
-            { from: origin, to: destination, aircraft: aircraftType },
+            { origin, destination, aircraft: aircraftType },
             requestOptions,
           ),
         ).then((value) => {
@@ -889,23 +890,25 @@ export class Compose extends APIResource {
   }
 
   /**
-   * The 41 North-American countries, which the `continent: "NA"` filter cannot return.
-   *
-   * **Workaround for a backend bug.** The reference dataset is loaded with pandas,
-   * which reads the literal `NA` as "not available": every North-American row arrives
-   * with `continent: null`, and `geo.countries({ continent: "NA" })` answers with an
-   * empty list. This fetches the full list — one request — and returns the rows whose
-   * continent is blank **or already `"NA"`**, which is exactly that set today and
-   * still is on the day the backend is fixed.
+   * The 41 North-American countries, whatever the backend calls them.
    *
    * ```ts
    * const na = await sky.compose.northAmericaCountries();
    * console.log(na.length); // 41
    * ```
    *
-   * @todo Remove once the backend reads the CSV with `keep_default_na=False`; at that
-   * point this returns nothing and `geo.countries({ continent: "NA" })` works. See
-   * `research/04-live-verification.md`, "Подтверждённые гипотезы".
+   * This began as a workaround: the reference dataset was loaded with pandas, which
+   * reads the literal `NA` as "not available", so every North-American row arrived
+   * with `continent: null` and `geo.countries({ continent: "NA" })` answered with an
+   * empty list.
+   *
+   * **That backend bug is fixed.** As of 2026-08-15 the filter returns the same 41
+   * countries in one small response, and it is the call to reach for. This method is
+   * kept because it is public API and because it still answers correctly against a
+   * deployment predating the fix; the cost is downloading all ~250 countries and
+   * filtering client side.
+   *
+   * @see {@link Geo.countries} — the direct route.
    */
   async northAmericaCountries(options?: RequestOptions): Promise<Country[]> {
     const response = await this.client.geo.countries({}, options);

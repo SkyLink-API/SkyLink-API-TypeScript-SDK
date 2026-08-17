@@ -1,15 +1,25 @@
 name: Publish
 
 # Publishes to npm with provenance attestation (OIDC).
-# Requires either npm Trusted Publishing configured for skylinkapi/TypeScript-SDK,
-# or an NPM_TOKEN repository secret (automation token) as a fallback.
+# Requires either npm Trusted Publishing configured for
+# SkyLink-API/SkyLink-API-TypeScript-SDK, or an NPM_TOKEN repository secret
+# (automation token) as a fallback.
+#
+# Every push to main lints, tests and builds; when package.json holds a version
+# that is not on npm yet, it is published. Pushing a `v*` tag still works and
+# additionally asserts the tag matches the package version.
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
 
 jobs:
   publish:
@@ -52,6 +62,20 @@ jobs:
       - run: npm test
       - run: npm run build
 
-      - run: npm publish --provenance --access public
+      - name: Check whether this version is already on npm
+        id: npm
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "skylink-api@$VERSION" version >/dev/null 2>&1; then
+            echo "unpublished=false" >> "$GITHUB_OUTPUT"
+            echo "skylink-api@$VERSION already exists on npm — publish will be skipped."
+          else
+            echo "unpublished=true" >> "$GITHUB_OUTPUT"
+            echo "skylink-api@$VERSION is not on npm yet — it will be published."
+          fi
+
+      - name: Publish to npm
+        if: steps.npm.outputs.unpublished == 'true'
+        run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

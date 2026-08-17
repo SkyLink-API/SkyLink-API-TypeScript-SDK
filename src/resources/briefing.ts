@@ -11,8 +11,14 @@
  *   format: "markdown",
  * });
  * ```
+ *
+ * Both calls carry their own deadline. A briefing is written by a language model over
+ * the weather and NOTAMs of two airports and takes tens of seconds — well past the
+ * client-wide 30 s default — so every spec here sets {@link BRIEFING_TIMEOUT_MS}. It is
+ * a default, not a ceiling: a per-call `{ timeout }` still wins.
  */
 
+import { BRIEFING_TIMEOUT_MS } from "../core/config.js";
 import type { RequestOptions } from "../core/types.js";
 import type {
   BriefingParams,
@@ -48,6 +54,18 @@ export class Briefing extends APIResource {
    * At least one of `include_weather`, `include_notams`, `include_pireps` must stay
    * enabled; the API answers 400 otherwise.
    *
+   * **This is the slowest call in the SDK** — 30-85 s live, depending on `format`. It
+   * runs with a 180 s deadline instead of the client's 30 s so a healthy request is not
+   * aborted, retried three times, and failed after two minutes. Cap it yourself where
+   * waiting that long is worse than no briefing:
+   *
+   * ```ts
+   * await sky.briefing.flight(
+   *   { origin: "KJFK", destination: "KLAX" },
+   *   { timeout: 90_000, maxRetries: 0 },
+   * );
+   * ```
+   *
    * `GET /briefing/flight?origin&destination&include_weather&include_notams&include_pireps`
    */
   flight(
@@ -55,15 +73,19 @@ export class Briefing extends APIResource {
     options?: RequestOptions,
   ): Promise<FlightBriefing>;
   async flight(params: BriefingParams, options?: RequestOptions): Promise<FlightBriefing | string> {
-    const body = await this.get<FlightBriefing | FlightBriefingText>(
-      "/briefing/flight",
+    const body = await this.request<FlightBriefing | FlightBriefingText>(
       {
-        origin: params.origin,
-        destination: params.destination,
-        include_weather: params.include_weather,
-        include_notams: params.include_notams,
-        include_pireps: params.include_pireps,
-        format: params.format,
+        method: "GET",
+        path: "/briefing/flight",
+        query: {
+          origin: params.origin,
+          destination: params.destination,
+          include_weather: params.include_weather,
+          include_notams: params.include_notams,
+          include_pireps: params.include_pireps,
+          format: params.format,
+        },
+        timeout: BRIEFING_TIMEOUT_MS,
       },
       options,
     );
@@ -81,6 +103,9 @@ export class Briefing extends APIResource {
    * resolves to the raw bytes (a `%PDF` magic number opens the file). The two
    * airports must differ, otherwise the API answers 422.
    *
+   * Slow for the same reason as {@link flight} — ~50 s live — and runs with the same
+   * 180 s deadline.
+   *
    * `GET /briefing/pdf?departure_icao&arrival_icao&flight_number`
    */
   pdf(params: BriefingPdfParams, options?: RequestOptions): Promise<Uint8Array> {
@@ -94,6 +119,7 @@ export class Briefing extends APIResource {
           flight_number: params.flight_number,
         },
         responseKind: "bytes",
+        timeout: BRIEFING_TIMEOUT_MS,
       },
       options,
     );

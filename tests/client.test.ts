@@ -629,6 +629,31 @@ describe("SkyLink with an injected fetch", () => {
     expect(calls).toBe(1);
   });
 
+  /**
+   * A `fetch` that answers after `ms` — and honours the abort signal, the way a real
+   * one does. Without the listener the deadline can elapse without anything happening,
+   * so a timeout test would pass whatever the SDK did.
+   */
+  function slowFetch(ms: number, body: unknown): FetchLike {
+    return (_url, init) =>
+      new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          resolve(
+            new Response(JSON.stringify(body), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            }),
+          );
+        }, ms);
+        init?.signal?.addEventListener("abort", () => {
+          clearTimeout(timer);
+          const error = new Error("This operation was aborted");
+          error.name = "AbortError";
+          reject(error);
+        });
+      });
+  }
+
   it("raises APITimeoutError when the deadline elapses", async () => {
     const hangingFetch: FetchLike = (_url, init) =>
       new Promise((_resolve, reject) => {
@@ -651,6 +676,39 @@ describe("SkyLink with an injected fetch", () => {
     );
   });
 
+  it("lets a spec's own timeout override the client default", async () => {
+    // `/briefing/*` takes 30-85 s live, so its spec pins 180 s. Proven here by giving
+    // the client a 20 ms deadline and answering after 60 ms: the call only survives if
+    // the spec's timeout replaced the client's.
+    const sky = new SkyLink({
+      apiKey: "k",
+      fetch: slowFetch(60, { origin: "KJFK", destination: "EGLL" }),
+      timeout: 20,
+      maxRetries: 0,
+      sleep: async () => undefined,
+    });
+
+    const briefing = await sky.briefing.flight({ origin: "KJFK", destination: "EGLL" });
+    expect(briefing.origin).toBe("KJFK");
+
+    // The same client, on a route without a spec timeout, still honours its 20 ms.
+    await expect(sky.weather.metar("KJFK")).rejects.toBeInstanceOf(APITimeoutError);
+  });
+
+  it("lets per-call options override a spec's timeout", async () => {
+    // The spec default is a default, not a ceiling.
+    const sky = new SkyLink({
+      apiKey: "k",
+      fetch: slowFetch(60, {}),
+      maxRetries: 0,
+      sleep: async () => undefined,
+    });
+
+    await expect(
+      sky.briefing.flight({ origin: "KJFK", destination: "EGLL" }, { timeout: 20 }),
+    ).rejects.toBeInstanceOf(APITimeoutError);
+  });
+
   it("aborts immediately on an external signal and does not retry", async () => {
     let calls = 0;
     const hangingFetch: FetchLike = (_url, init) => {
@@ -664,6 +722,28 @@ describe("SkyLink with an injected fetch", () => {
     const sky = new SkyLink({ apiKey: "k", fetch: hangingFetch, sleep: async () => undefined });
     const promise = sky.request({ method: "GET", path: "/health" }, { signal: controller.signal });
     setTimeout(() => controller.abort(), 5);
+
+    await expect(promise).rejects.toBeInstanceOf(APIConnectionError);
+    await expect(promise).rejects.toThrow("Request was aborted");
+    expect(calls).toBe(1);
+  });
+
+  it("aborts during the retry backoff wait instead of sleeping it out", async () => {
+    // A 503 with `Retry-After: 60` would park the default sleep for a minute;
+    // the caller's abort must cut that wait short, not just the fetch itself.
+    let calls = 0;
+    const unavailableFetch: FetchLike = async () => {
+      calls += 1;
+      return new Response("{}", {
+        status: 503,
+        headers: { "content-type": "application/json", "retry-after": "60" },
+      });
+    };
+
+    const controller = new AbortController();
+    const sky = new SkyLink({ apiKey: "k", fetch: unavailableFetch });
+    const promise = sky.request({ method: "GET", path: "/health" }, { signal: controller.signal });
+    setTimeout(() => controller.abort(), 10);
 
     await expect(promise).rejects.toBeInstanceOf(APIConnectionError);
     await expect(promise).rejects.toThrow("Request was aborted");

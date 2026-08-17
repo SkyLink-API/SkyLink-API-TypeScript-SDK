@@ -228,6 +228,27 @@ function cacheTtl(cache: CacheProtocol, spec: RequestSpec): number {
 }
 
 /**
+ * Wait out a retry delay, bailing immediately when the caller's signal aborts.
+ *
+ * `config.sleep` rejects on abort; anything else it throws (a custom test seam,
+ * for instance) is passed through untouched.
+ */
+async function sleepBeforeRetry(
+  config: ResolvedConfig,
+  ms: number,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  try {
+    await config.sleep(ms, signal);
+  } catch (cause) {
+    if (signal?.aborted) {
+      throw new APIConnectionError("Request was aborted.", { cause });
+    }
+    throw cause;
+  }
+}
+
+/**
  * Issue one API request, retrying according to the policy in `./retry.ts`.
  *
  * The deadline is enforced per attempt with an `AbortController`; an externally
@@ -274,7 +295,9 @@ export async function execute<T>(
     }
   }
 
-  const timeout = options.timeout ?? config.timeout;
+  // Precedence: the caller's per-call timeout, then the endpoint's own default
+  // (`/briefing/*` only), then the client-wide one.
+  const timeout = options.timeout ?? spec.timeout ?? config.timeout;
   const maxRetries = options.maxRetries ?? config.maxRetries;
   const hasBody = spec.body !== undefined && spec.body !== null;
 
@@ -322,7 +345,7 @@ export async function execute<T>(
             { cause },
           );
       if (attempt < maxRetries && shouldRetryNetworkError(method)) {
-        await config.sleep(backoffDelay(attempt, config.random));
+        await sleepBeforeRetry(config, backoffDelay(attempt, config.random), external);
         attempt += 1;
         continue;
       }
@@ -346,7 +369,11 @@ export async function execute<T>(
       });
 
       if (attempt < maxRetries && shouldRetryStatus(response.status, method)) {
-        await config.sleep(retryAfter ?? backoffDelay(attempt, config.random));
+        await sleepBeforeRetry(
+          config,
+          retryAfter ?? backoffDelay(attempt, config.random),
+          external,
+        );
         attempt += 1;
         continue;
       }

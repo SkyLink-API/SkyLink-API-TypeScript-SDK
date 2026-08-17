@@ -114,7 +114,7 @@ export {
   type IterAircraftOptions,
   MAX_ITER_PAGE_SIZE,
 } from "./resources/adsb.js";
-export type { BatchOptions } from "./resources/batch.js";
+export type { BatchOptions, BatchWeatherOptions } from "./resources/batch.js";
 export {
   type AirportBriefOptions,
   Compose,

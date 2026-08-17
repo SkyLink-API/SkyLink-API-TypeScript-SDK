@@ -21,7 +21,12 @@ import { classifyAirportCode } from "../helpers/idents.js";
 import type { EnrichedAirport } from "../models/airports.js";
 import type { FlightStatusResponse } from "../models/flight-status.js";
 import type { NotamsResponse } from "../models/notams.js";
-import type { MetarResponse, TafResponse } from "../models/weather.js";
+import type {
+  MetarResponse,
+  ParsedMetarResponse,
+  ParsedTafResponse,
+  TafResponse,
+} from "../models/weather.js";
 import { APIResource } from "./base.js";
 
 /** Per-call options of every `sky.batch` method. */
@@ -32,6 +37,16 @@ export interface BatchOptions extends RequestOptions {
    * spends its retry budget on `429`s. Must be a positive integer.
    */
   concurrency?: number;
+}
+
+/** Options of the weather batches, which can also ask for the decoded block. */
+export interface BatchWeatherOptions extends BatchOptions {
+  /**
+   * Also return the decoded report, exactly as `sky.weather.metar(icao, { parsed:
+   * true })` does. Everything in `skylink-api/weather` needs it — see
+   * {@link Batch.metars}.
+   */
+  parsed?: boolean;
 }
 
 /** Concurrency-limited fan-out over the single-item endpoints. */
@@ -67,31 +82,70 @@ export class Batch extends APIResource {
   }
 
   /**
-   * Current METAR for each airport.
+   * Current METAR for each airport, decoded.
+   *
+   * `GET /weather/metar/{icao}?parsed=true` once per unique ICAO.
+   */
+  metars(
+    icaos: Iterable<string>,
+    options: BatchWeatherOptions & { parsed: true },
+  ): Promise<BatchResult<ParsedMetarResponse>>;
+  /**
+   * Current METAR for each airport, as raw text.
    *
    * `GET /weather/metar/{icao}` once per unique ICAO.
+   *
+   * Pass `{ parsed: true }` whenever the results feed `skylink-api/weather`:
+   * `flightCategory`, `ceilingFt` and the unit parsers all read decoded fields and
+   * never re-parse the raw report, so on a plain `MetarResponse` they can only
+   * answer `null`. Colouring a board of airports by flight category is the main
+   * reason to batch METARs, which makes `parsed: true` the usual choice.
    *
    * @param icaos Four-letter ICAO codes. Keys are kept verbatim, so `"kjfk"` and
    * `"KJFK"` are two entries and two requests.
    */
-  metars(icaos: Iterable<string>, options: BatchOptions = {}): Promise<BatchResult<MetarResponse>> {
+  metars(
+    icaos: Iterable<string>,
+    options?: BatchWeatherOptions,
+  ): Promise<BatchResult<MetarResponse>>;
+  metars(
+    icaos: Iterable<string>,
+    options: BatchWeatherOptions = {},
+  ): Promise<BatchResult<MetarResponse | ParsedMetarResponse>> {
+    const { parsed, ...batchOptions } = options;
     return this.run(
       icaos,
-      (icao, requestOptions) => this.client.weather.metar(icao, {}, requestOptions),
-      options,
+      (icao, requestOptions) => this.client.weather.metar(icao, { parsed }, requestOptions),
+      batchOptions,
     );
   }
 
   /**
-   * Current TAF for each airport.
+   * Current TAF for each airport, decoded.
    *
-   * `GET /weather/taf/{icao}` once per unique ICAO.
+   * `GET /weather/taf/{icao}?parsed=true` once per unique ICAO.
    */
-  tafs(icaos: Iterable<string>, options: BatchOptions = {}): Promise<BatchResult<TafResponse>> {
+  tafs(
+    icaos: Iterable<string>,
+    options: BatchWeatherOptions & { parsed: true },
+  ): Promise<BatchResult<ParsedTafResponse>>;
+  /**
+   * Current TAF for each airport, as raw text.
+   *
+   * `GET /weather/taf/{icao}` once per unique ICAO. Pass `{ parsed: true }` for the
+   * decoded forecast periods — see {@link Batch.metars} for why the derived-weather
+   * helpers need them.
+   */
+  tafs(icaos: Iterable<string>, options?: BatchWeatherOptions): Promise<BatchResult<TafResponse>>;
+  tafs(
+    icaos: Iterable<string>,
+    options: BatchWeatherOptions = {},
+  ): Promise<BatchResult<TafResponse | ParsedTafResponse>> {
+    const { parsed, ...batchOptions } = options;
     return this.run(
       icaos,
-      (icao, requestOptions) => this.client.weather.taf(icao, {}, requestOptions),
-      options,
+      (icao, requestOptions) => this.client.weather.taf(icao, { parsed }, requestOptions),
+      batchOptions,
     );
   }
 

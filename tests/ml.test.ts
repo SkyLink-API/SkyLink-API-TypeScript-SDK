@@ -48,12 +48,12 @@ afterEach(async () => {
 });
 
 describe("ml.flightTime", () => {
-  it("sends from/to as the literal wire query keys", async () => {
+  it("takes origin/destination and maps them onto the from/to wire keys", async () => {
     mockJson({ path: /^\/v3\.1\/ml\/flight-time\?/, body: predictionBody });
 
     const prediction: FlightTimePrediction = await ml().flightTime({
-      from: "KJFK",
-      to: "EGLL",
+      origin: "KJFK",
+      destination: "EGLL",
     });
 
     expect(prediction.origin).toBe("KJFK");
@@ -69,6 +69,30 @@ describe("ml.flightTime", () => {
     expect(request?.query.has("origin")).toBe(false);
     expect(request?.query.has("destination")).toBe(false);
     expect(request?.query.has("aircraft")).toBe(false);
+  });
+
+  it("still accepts the deprecated from/to spelling", async () => {
+    // The rename is additive on purpose: code written against 0.1 keeps working,
+    // and both spellings reach the endpoint as its own from/to keys.
+    mockJson({ path: /^\/v3\.1\/ml\/flight-time\?/, body: predictionBody });
+
+    await ml().flightTime({ from: "KJFK", to: "EGLL" });
+
+    expect(requests[0]?.fullPath).toBe("/v3.1/ml/flight-time?from=KJFK&to=EGLL");
+  });
+
+  it("prefers origin/destination when a caller passes both spellings", async () => {
+    mockJson({ path: /^\/v3\.1\/ml\/flight-time\?/, body: predictionBody });
+
+    await ml().flightTime({
+      origin: "KJFK",
+      destination: "EGLL",
+      from: "WRONG",
+      to: "WRONG",
+    } as never);
+
+    expect(requests[0]?.query.get("from")).toBe("KJFK");
+    expect(requests[0]?.query.get("to")).toBe("EGLL");
   });
 
   it("sends the aircraft type when supplied", async () => {

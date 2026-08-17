@@ -5,6 +5,7 @@
 import type { CacheProtocol } from "../helpers/cache.js";
 import { VERSION } from "../version.js";
 import { AuthenticationError, SkyLinkError } from "./errors.js";
+import { sleep as defaultSleep } from "./retry.js";
 import type { FetchLike, Headers, HistoryPlan, Provider } from "./types.js";
 
 /** Base URL of the direct channel (the API version lives in the path). */
@@ -32,6 +33,21 @@ export const DEFAULT_PROVIDER: Provider = "rapidapi";
 
 /** Overall request deadline in milliseconds. */
 export const DEFAULT_TIMEOUT_MS = 30_000;
+
+/**
+ * Request deadline for `/briefing/*`, the one family {@link DEFAULT_TIMEOUT_MS} is wrong for.
+ *
+ * Briefings are composed by a language model over METAR, TAF, NOTAMs and (optionally)
+ * PIREPs for both airports. Measured against the live API on 2026-08-15: `format: "json"`
+ * took 37-58 s, `"markdown"` 30-50 s, `"plain_text"` up to 85 s, and `briefing.pdf()`
+ * about 50 s. Under the 30 s default every one of those is an `APITimeoutError` — and
+ * because a timeout is retried, the caller waits ~120 s to be told a working endpoint
+ * failed.
+ *
+ * Applied as the *spec* default (`RequestSpec.timeout`), so a per-call
+ * `{ timeout }` in `RequestOptions` still overrides it.
+ */
+export const BRIEFING_TIMEOUT_MS = 180_000;
 
 /** Default number of retries after the initial attempt. */
 export const DEFAULT_MAX_RETRIES = 3;
@@ -84,7 +100,7 @@ export interface ClientOptions {
    * Test seam: replaces the delay between retries.
    * @internal
    */
-  sleep?: (ms: number) => Promise<void>;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   /**
    * Test seam: replaces the jitter RNG used by the backoff calculation.
    * @internal
@@ -106,7 +122,7 @@ export interface ResolvedConfig {
   /** Response cache, or `null` when the client does not cache (the default). */
   cache: CacheProtocol | null;
   fetch: FetchLike;
-  sleep: (ms: number) => Promise<void>;
+  sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   random: () => number;
 }
 
@@ -138,14 +154,10 @@ function resolveFetch(custom?: FetchLike): FetchLike {
   const globalFetch = (globalThis as { fetch?: FetchLike }).fetch;
   if (typeof globalFetch !== "function") {
     throw new SkyLinkError(
-      "No global fetch available. Use Node.js >= 18 or pass a custom `fetch` implementation.",
+      "No global fetch available. Use Node.js >= 20 or pass a custom `fetch` implementation.",
     );
   }
   return globalFetch.bind(globalThis) as FetchLike;
-}
-
-function defaultSleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
