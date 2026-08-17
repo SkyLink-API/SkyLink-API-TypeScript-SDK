@@ -728,6 +728,28 @@ describe("SkyLink with an injected fetch", () => {
     expect(calls).toBe(1);
   });
 
+  it("aborts during the retry backoff wait instead of sleeping it out", async () => {
+    // A 503 with `Retry-After: 60` would park the default sleep for a minute;
+    // the caller's abort must cut that wait short, not just the fetch itself.
+    let calls = 0;
+    const unavailableFetch: FetchLike = async () => {
+      calls += 1;
+      return new Response("{}", {
+        status: 503,
+        headers: { "content-type": "application/json", "retry-after": "60" },
+      });
+    };
+
+    const controller = new AbortController();
+    const sky = new SkyLink({ apiKey: "k", fetch: unavailableFetch });
+    const promise = sky.request({ method: "GET", path: "/health" }, { signal: controller.signal });
+    setTimeout(() => controller.abort(), 10);
+
+    await expect(promise).rejects.toBeInstanceOf(APIConnectionError);
+    await expect(promise).rejects.toThrow("Request was aborted");
+    expect(calls).toBe(1);
+  });
+
   it("rejects a request whose signal is already aborted", async () => {
     const controller = new AbortController();
     controller.abort();

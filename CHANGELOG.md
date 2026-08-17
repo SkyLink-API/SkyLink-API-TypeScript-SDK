@@ -6,8 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-17
+
+First public release. Covers the SkyLink API v3.1 surface.
+
 ### Fixed
 
+Defects found and fixed during the pre-release audit, before anything shipped.
+
+- **Aborting a request did not interrupt the retry backoff wait.** `RequestOptions.signal`
+  is documented to cancel the call immediately, and it did — except while the transport was
+  sleeping between retries, where a bare `setTimeout` ignored the signal entirely. After a
+  503 with `Retry-After: 60` a caller's `controller.abort()` would hang for up to a minute
+  before the loop noticed. The backoff wait now uses the same abort-aware sleep as the
+  polling helpers, so an abort rejects immediately with `APIConnectionError`; the
+  `sleep` test seam gained an optional `AbortSignal` second parameter.
 - **`briefing.flight()` and `briefing.pdf()` timed out on every call with the default
   client.** A briefing is composed by a language model over both airports' weather and
   NOTAMs and takes far longer than the 30 000 ms `DEFAULT_TIMEOUT_MS`: measured live on
@@ -30,7 +43,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Matches the same fix in the Python SDK.
 
+- `batch.metars()` and `batch.tafs()` accept `parsed` through the new
+  `BatchWeatherOptions`, overloaded so `{ parsed: true }` narrows the result to
+  `BatchResult<ParsedMetarResponse>` / `BatchResult<ParsedTafResponse>`. Previously the
+  calls hard-coded an empty params object (`weather.metar(icao, {}, options)`), so asking
+  for the decoded block was impossible — and everything in `skylink-api/weather`
+  (`flightCategory`, `ceilingFt`, the unit parsers) reads decoded fields and could only
+  answer `null` on the result. Colouring a board of airports by flight category is the
+  main reason to batch METARs, and it could not be done. Matches the same fix in the
+  Python SDK.
+
 ### Changed
+
+- `ml.flightTime()` takes `{ origin, destination }`. It previously exposed the endpoint's
+  own query keys `{ from, to }`, which disagreed with the Python SDK
+  (`ml.flight_time(origin=, destination=)`, where the rename is deliberate and documented)
+  and with this SDK's own `compose.routeBrief(origin, destination)` — which called
+  `flightTime({ from, to })` internally. Divergence between the two SDKs is a defect by
+  contract, so the names are now the same on both sides.
 
 Documentation catching up with backend fixes shipped in the 2026-08 API release. No
 behaviour changes — every one of these endpoints already worked through the SDK once the
@@ -52,36 +82,11 @@ server side was corrected; what was wrong was the SDK telling users they were br
 - `TicketSearchResponse.count` now warns that the list is long rather than short:
   `JFK→LAX` returned 111 offers and `LHR→JFK` 120.
 
-### Added
-
-- `batch.metars()` and `batch.tafs()` accept `parsed` through the new
-  `BatchWeatherOptions`, overloaded so `{ parsed: true }` narrows the result to
-  `BatchResult<ParsedMetarResponse>` / `BatchResult<ParsedTafResponse>`. Previously the
-  calls hard-coded an empty params object (`weather.metar(icao, {}, options)`), so asking
-  for the decoded block was impossible — and everything in `skylink-api/weather`
-  (`flightCategory`, `ceilingFt`, the unit parsers) reads decoded fields and could only
-  answer `null` on the result. Colouring a board of airports by flight category is the
-  main reason to batch METARs, and it could not be done. Matches the same fix in the
-  Python SDK.
-
-### Changed
-
-- `ml.flightTime()` takes `{ origin, destination }`. It previously exposed the endpoint's
-  own query keys `{ from, to }`, which disagreed with the Python SDK
-  (`ml.flight_time(origin=, destination=)`, where the rename is deliberate and documented)
-  and with this SDK's own `compose.routeBrief(origin, destination)` — which called
-  `flightTime({ from, to })` internally. Divergence between the two SDKs is a defect by
-  contract, so the names are now the same on both sides.
-
 ### Deprecated
 
 - `{ from, to }` on `ml.flightTime()`. Still accepted and still works — the parameters are
   a union of both spellings, `origin`/`destination` win when both are present — but the
   type is marked `@deprecated`. Existing code compiles unchanged.
-
-## [0.1.0] - Unreleased
-
-First public release. Covers the SkyLink API v3.1 surface.
 
 ### Added
 
@@ -214,5 +219,5 @@ First public release. Covers the SkyLink API v3.1 surface.
   batch, compose, polling, helper exports, cache and quota — and an env-gated
   integration suite.
 
-[Unreleased]: https://github.com/skylinkapi/TypeScript-SDK/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/skylinkapi/TypeScript-SDK/releases/tag/v0.1.0
+[Unreleased]: https://github.com/SkyLink-API/SkyLink-API-TypeScript-SDK/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/SkyLink-API/SkyLink-API-TypeScript-SDK/releases/tag/v0.1.0
