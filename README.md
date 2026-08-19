@@ -772,9 +772,12 @@ so it arms only on the direct channel (or an explicit `baseUrl`) and reports as 
 otherwise. Everything it creates points at an unreachable `example.com` URL and is deleted
 afterwards, pass or fail.
 
-Publishing is automated: pushing a `v*` tag builds the package and runs
-`npm publish --provenance --access public` via OIDC. The npm trusted publisher must be
-configured for `SkyLink-API/SkyLink-API-TypeScript-SDK` beforehand.
+Publishing is automated: a push to `main` (or a `v*` tag) lints, type-checks, tests and
+builds the package, then publishes it when `package.json` holds a version that is not on
+npm yet — so merging a version bump releases it and any other merge is a no-op. Provenance
+attestation is attached when the repository is public; npm cannot mint it from a private
+source. Authentication comes from the `NPM_ACCESS_TOKEN` secret, or from npm trusted
+publishing (OIDC) once it is configured for `SkyLink-API/SkyLink-API-TypeScript-SDK`.
 
 ## License
 

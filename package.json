@@ -148,8 +148,7 @@
     "url": "https://github.com/SkyLink-API/SkyLink-API-TypeScript-SDK/issues"
   },
   "publishConfig": {
-    "access": "public",
-    "provenance": true
+    "access": "public"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.0.0",

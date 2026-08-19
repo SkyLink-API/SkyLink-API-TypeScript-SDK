@@ -1,6 +1,7 @@
 name: Publish
 
-# Publishes to npm with provenance attestation (OIDC).
+# Publishes to npm. Provenance attestation (OIDC) is added when the repository
+# is public — npm cannot mint it from a private source.
 # Requires either npm Trusted Publishing configured for
 # SkyLink-API/SkyLink-API-TypeScript-SDK, or an NPM_ACCESS_TOKEN repository secret
 # (automation token) as a fallback.
@@ -76,6 +77,17 @@ jobs:
 
       - name: Publish to npm
         if: steps.npm.outputs.unpublished == 'true'
-        run: npm publish --provenance --access public
+        # npm refuses to mint provenance from a private repository. The flag is
+        # therefore added only when the source is public, so making the repo
+        # public is the single action needed to get attestation back — nothing
+        # here has to change. An unknown visibility is treated as private, which
+        # costs the attestation rather than the release.
+        run: |
+          if [ "${{ github.event.repository.visibility }}" = "public" ]; then
+            npm publish --provenance --access public
+          else
+            echo "::warning::Repository is not public — publishing without provenance."
+            npm publish --access public
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_ACCESS_TOKEN }}
