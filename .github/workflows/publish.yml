@@ -2,7 +2,7 @@ name: Publish
 
 # Publishes to npm with provenance attestation (OIDC).
 # Requires either npm Trusted Publishing configured for
-# SkyLink-API/SkyLink-API-TypeScript-SDK, or an NPM_TOKEN repository secret
+# SkyLink-API/SkyLink-API-TypeScript-SDK, or an NPM_ACCESS_TOKEN repository secret
 # (automation token) as a fallback.
 #
 # Every push to main lints, tests and builds; when package.json holds a version
@@ -78,4 +78,4 @@ jobs:
         if: steps.npm.outputs.unpublished == 'true'
         run: npm publish --provenance --access public
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_ACCESS_TOKEN }}
