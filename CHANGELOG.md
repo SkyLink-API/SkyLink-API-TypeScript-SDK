@@ -6,6 +6,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-21
+
+No functional changes: the published files are identical to 0.1.0. This release
+exists to move publishing onto npm trusted publishing (OIDC).
+
+### Changed
+
+- Released through npm trusted publishing instead of a long-lived automation token.
+  `0.1.0` was pushed from a personal account holding a granular token with write
+  access to every package that account could reach; the release now authenticates
+  per-run against `SkyLink-API/SkyLink-API-TypeScript-SDK` and no npm credential is
+  stored in the repository at all.
+- The release job runs on Node 24 (npm 11.17). Node 22 bundles npm 10, which cannot
+  request an OIDC token and silently falls back to token auth — a misconfigured
+  release would have looked green while quietly skipping trusted publishing.
+
+### Note
+
+- Still published without a provenance attestation: npm cannot mint one while the
+  source repository is private. Nothing needs to change here for it to appear — the
+  workflow adds the flag on its own once the repository is public.
+
 ## [0.1.0] - 2026-08-17
 
 First public release. Covers the SkyLink API v3.1 surface.
@@ -219,5 +241,6 @@ server side was corrected; what was wrong was the SDK telling users they were br
   batch, compose, polling, helper exports, cache and quota — and an env-gated
   integration suite.
 
-[Unreleased]: https://github.com/SkyLink-API/SkyLink-API-TypeScript-SDK/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/SkyLink-API/SkyLink-API-TypeScript-SDK/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/SkyLink-API/SkyLink-API-TypeScript-SDK/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/SkyLink-API/SkyLink-API-TypeScript-SDK/releases/tag/v0.1.0

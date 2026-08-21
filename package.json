@@ -1,6 +1,6 @@
 {
   "name": "skylink-api",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Official TypeScript/JavaScript SDK for the SkyLink API — aviation data: live ADS-B, weather, airports, charts, NOTAMs, flight status and more.",
   "type": "module",
   "main": "./dist/index.cjs",
