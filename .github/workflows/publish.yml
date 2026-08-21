@@ -4,7 +4,11 @@ name: Publish
 # is public — npm cannot mint it from a private source.
 # Requires either npm Trusted Publishing configured for
 # SkyLink-API/SkyLink-API-TypeScript-SDK, or an NPM_ACCESS_TOKEN repository secret
-# (automation token) as a fallback.
+# as a fallback.
+#
+# Trusted publishing needs npm >= 11.5.1 on Node >= 22.14. Node 22 still bundles
+# npm 10, which cannot speak OIDC at all and quietly falls back to the token, so
+# this job runs on Node 24 and asserts the npm version before it publishes.
 #
 # Every push to main lints, tests and builds; when package.json holds a version
 # that is not on npm yet, it is published. Pushing a `v*` tag still works and
@@ -30,11 +34,25 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: "22.x"
+          node-version: "24"
           cache: npm
           registry-url: "https://registry.npmjs.org"
+
+      # Node 24 bundles npm 11.17, comfortably past the 11.5.1 trusted publishing
+      # needs. Asserted rather than assumed: on an image carrying an older npm the
+      # publish would authenticate with the token, skip OIDC, land without an
+      # attestation — and still report success.
+      - name: Ensure npm is new enough for OIDC
+        run: |
+          NEED=11.5.1
+          HAVE=$(npm --version)
+          if [ "$({ echo "$NEED"; echo "$HAVE"; } | sort -V | head -n1)" != "$NEED" ]; then
+            echo "npm $HAVE predates $NEED — upgrading so trusted publishing can engage."
+            npm install -g "npm@^$NEED"
+          fi
+          echo "npm $(npm --version) on node $(node --version)"
 
       - run: npm ci
 
@@ -67,7 +85,10 @@ jobs:
         id: npm
         run: |
           VERSION=$(node -p "require('./package.json').version")
-          if npm view "skylink-api@$VERSION" version >/dev/null 2>&1; then
+          # Checked on the output, not just the exit status: older npm answers a
+          # missing version of an existing package with success and an empty line,
+          # which would mark the release as already published and skip it silently.
+          if [ -n "$(npm view "skylink-api@$VERSION" version 2>/dev/null)" ]; then
             echo "unpublished=false" >> "$GITHUB_OUTPUT"
             echo "skylink-api@$VERSION already exists on npm — publish will be skipped."
           else
@@ -91,3 +112,22 @@ jobs:
           fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_ACCESS_TOKEN }}
+
+      # A publish that fell back to the token instead of OIDC still succeeds and
+      # still reports green; it just lands without an attestation. Catch it here
+      # rather than on the package page weeks later. Only meaningful once the
+      # repository is public, since provenance is skipped by design before that.
+      - name: Verify the published version carries provenance
+        if: steps.npm.outputs.unpublished == 'true' && github.event.repository.visibility == 'public'
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          for attempt in 1 2 3 4 5; do
+            if npm view "skylink-api@$VERSION" dist.attestations --json 2>/dev/null | grep -q provenance; then
+              echo "provenance attestation present for $VERSION"
+              exit 0
+            fi
+            echo "not visible yet (attempt $attempt) — giving the registry a moment"
+            sleep 5
+          done
+          echo "::error::$VERSION was published without a provenance attestation — the OIDC path did not engage. Check the npm CLI version and the trusted publisher configuration."
+          exit 1
