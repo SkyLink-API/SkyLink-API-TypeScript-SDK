@@ -82,9 +82,11 @@ describe("resolveConfig", () => {
 
   it("sends the node User-Agent", () => {
     expect(USER_AGENT).toBe(`skylink-api-node/${VERSION}`);
-    expect(resolveConfig({ apiKey: "k" }).defaultHeaders["User-Agent"]).toBe(
-      "skylink-api-node/0.1.0",
-    );
+    expect(resolveConfig({ apiKey: "k" }).defaultHeaders["User-Agent"]).toBe(USER_AGENT);
+    // Shape, not a pinned number: asserting the literal version here made every
+    // release fail the suite, while a missing or malformed one is still caught.
+    expect(USER_AGENT.startsWith("skylink-api-node/")).toBe(true);
+    expect(VERSION.split(".")).toHaveLength(3);
   });
 
   it("falls back to RAPIDAPI_KEY on the default provider", () => {
